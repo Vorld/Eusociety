@@ -1,0 +1,12 @@
+# Rust build artifacts
+/target/
+
+# Node modules (if you add any tooling later)
+/frontend/node_modules/
+
+# Editor folders
+.vscode/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
