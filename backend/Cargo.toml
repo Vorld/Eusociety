@@ -1,5 +1,5 @@
 [package]
-name = "backend"
+name = "eusociety"
 version = "0.1.0"
 edition = "2024"
 
@@ -14,3 +14,4 @@ rand = "0.8"
 bincode = "1.3"
 futures-util = "0.3"
 rayon = "1.8"
+once_cell = "1.21"
