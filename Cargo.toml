@@ -1,2 +1,39 @@
 [workspace]
-members = ["backend"]
+members = [
+    "eusociety-core",
+    "eusociety-config",
+    "eusociety-transport",
+    "eusociety-simulation",
+    "eusociety-runner",
+    # "eusociety-benchmarks", # Add later when needed
+    # "eusociety-macros",     # Add later if needed
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Kulkarni Venugopal Vasant"]
+repository = "https://github.com/Vorld/eusociety"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+rayon = "1.7"
+thiserror = "1.0"
+log = "0.4"
+
+[profile.dev]
+opt-level = 1  # Slightly better performance in development
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"  # Remove panic unwinding code in release mode
+
+[profile.bench]
+opt-level = 3
+debug = true    # Include debug symbols for better profiling
+lto = true      # Full link-time optimization for benchmarks

@@ -1,0 +1,28 @@
+body {
+    margin: 0;
+    overflow: hidden; /* Prevent scrollbars */
+    background-color: #e7e7e7;
+    color: #eee;
+    font-family: sans-serif;
+}
+
+#glCanvas {
+    display: block; /* Remove extra space below canvas */
+    width: 100vw;
+    height: 100vh;
+}
+
+#infoPanel {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    background-color: rgba(0, 0, 0, 0.7);
+    padding: 10px;
+    border-radius: 5px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+#infoPanel span {
+    font-weight: bold;
+}

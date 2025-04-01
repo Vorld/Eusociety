@@ -1,0 +1,15 @@
+[package]
+name = "eusociety-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"  # Better error handling
+toml = "0.7"  # Support for TOML config files as an alternative
+clap = { version = "4.2", features = ["derive"] }  # For command line argument parsing
+tempfile = "3.5"  # For tests
+
+[dev-dependencies]
+assert_fs = "1.0"  # Better filesystem assertions in tests

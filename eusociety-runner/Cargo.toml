@@ -1,0 +1,24 @@
+[package]
+name = "eusociety-runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eusociety-core = { path = "../eusociety-core" }
+eusociety-config = { path = "../eusociety-config" }
+eusociety-transport = { path = "../eusociety-transport", features = ["websocket"] }
+eusociety-simulation = { path = "../eusociety-simulation" }
+
+clap = { version = "4.2", features = ["derive"] }
+rand = "0.8"
+log = "0.4"
+env_logger = "0.10"
+thiserror = "1.0"
+hdrhistogram = "7.5"  # For performance statistics
+crossbeam-channel = "0.5"  # For communication between threads
+ctrlc = "3.3"  # For handling Ctrl+C gracefully
+
+[features]
+default = ["websocket"]  # Enable websocket by default
+websocket = []
+profiling = ["websocket"]

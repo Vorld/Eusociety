@@ -1,0 +1,30 @@
+{
+  "framerate": 60,
+  "world_settings": {
+    "width": 500.0,
+    "height": 500.0
+  },
+  "initial_state": [
+    {
+      "type": "walker",
+      "count": 100,
+      "behavior": "random"
+    }
+  ],
+  "spatial_grid": {
+    "cell_size": 5.0
+  },
+  "transport": {
+    "serializer": {
+      "type": "json",
+      "options": null
+    },
+    "sender": {
+      "type": "websocket",
+      "options": {
+        "host": "127.0.0.1",
+        "port": 8080
+      }
+    }
+  }
+}
