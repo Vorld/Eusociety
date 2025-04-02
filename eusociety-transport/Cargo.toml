@@ -1,21 +1,14 @@
 [package]
 name = "eusociety-transport"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
-eusociety-core = { path = "../eusociety-core" }
-eusociety-simulation = { path = "../eusociety-simulation" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-base64 = "0.13"  # For binary serialization
-bincode = "1.3"  # Efficient binary serialization
-thiserror = "1.0"  # Better error handling
-bytes = "1.4"  # Efficient byte buffer manipulation
-tokio = { version = "1.28", features = ["full"], optional = true }  # Async runtime for WebSocket
-tokio-tungstenite = { version = "0.18", optional = true }  # WebSocket implementation
-futures = { version = "0.3", optional = true }  # Future utilities for WebSocket
-
-[features]
-default = []
-websocket = ["tokio", "tokio-tungstenite", "futures"]
+eusociety-core = { path = "../eusociety-core" } # Need World type
+serde.workspace = true # Needed by bincode potentially
+bincode.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true # For parsing options

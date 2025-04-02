@@ -1,12 +1,11 @@
 [package]
 name = "eusociety-simulation"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
 
 [dependencies]
 eusociety-core = { path = "../eusociety-core" }
-serde = { version = "1.0", features = ["derive"] }
-rand = "0.8"
-ordered-float = "3.4"  # For ordered floating-point comparisons in spatial queries
-smallvec = "1.10"  # For more efficient small vector allocations
-glam = "0.24"  # Fast vector math library for spatial calculations
+rand.workspace = true

@@ -1,24 +1,23 @@
 [package]
 name = "eusociety-runner"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+
+# This is the main binary crate
+[[bin]]
+name = "eusociety"
+path = "src/main.rs"
 
 [dependencies]
 eusociety-core = { path = "../eusociety-core" }
 eusociety-config = { path = "../eusociety-config" }
-eusociety-transport = { path = "../eusociety-transport", features = ["websocket"] }
+eusociety-transport = { path = "../eusociety-transport" }
 eusociety-simulation = { path = "../eusociety-simulation" }
 
-clap = { version = "4.2", features = ["derive"] }
-rand = "0.8"
-log = "0.4"
-env_logger = "0.10"
-thiserror = "1.0"
-hdrhistogram = "7.5"  # For performance statistics
-crossbeam-channel = "0.5"  # For communication between threads
-ctrlc = "3.3"  # For handling Ctrl+C gracefully
-
-[features]
-default = ["websocket"]  # Enable websocket by default
-websocket = []
-profiling = ["websocket"]
+spin_sleep.workspace = true # For frame pacing
+thiserror.workspace = true # For error handling
+log.workspace = true # Optional: for logging status
+env_logger = "0.10" # Optional: simple logger implementation

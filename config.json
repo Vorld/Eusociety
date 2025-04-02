@@ -1,30 +1,21 @@
 {
-  "framerate": 60,
-  "world_settings": {
-    "width": 500.0,
-    "height": 500.0
-  },
-  "initial_state": [
-    {
-      "type": "walker",
-      "count": 100,
-      "behavior": "random"
-    }
-  ],
-  "spatial_grid": {
-    "cell_size": 5.0
+  "start_state": {
+    "entities": [
+      {"id": 0, "components": {"position": {"x": 0.0, "y": 0.0}}},
+      {"id": 1, "components": {"position": {"x": 10.0, "y": 5.0}}},
+      {"id": 2, "components": {"position": {"x": -5.0, "y": -5.0}}},
+      {"id": 3, "components": {"position": {"x": 2.0, "y": 8.0}}},
+      {"id": 4, "components": {"position": {"x": -8.0, "y": 2.0}}},
+      {"id": 5, "components": {"position": {"x": 5.0, "y": -10.0}}},
+      {"id": 6, "components": {"position": {"x": -10.0, "y": -10.0}}},
+      {"id": 7, "components": {"position": {"x": 1.0, "y": 1.0}}},
+      {"id": 8, "components": {"position": {"x": 0.0, "y": 10.0}}},
+      {"id": 9, "components": {"position": {"x": 10.0, "y": 0.0}}}
+    ]
   },
   "transport": {
-    "serializer": {
-      "type": "json",
-      "options": null
-    },
-    "sender": {
-      "type": "websocket",
-      "options": {
-        "host": "127.0.0.1",
-        "port": 8080
-      }
-    }
-  }
+    "serializer": {"type": "binary"},
+    "sender": {"type": "file", "options": {"path": "output.bin"}}
+  },
+  "simulation": {"threads": 1, "fps": 60}
 }

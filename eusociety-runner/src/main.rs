@@ -1,242 +1,166 @@
-use clap::Parser;
-use eusociety_config::{load_config, Config, ConfigError, BehaviorType, SerializerType, SenderType};
-use eusociety_core::{World, scheduler::Scheduler}; // Import Scheduler
-use eusociety_simulation::{Position, Velocity, DeltaTime, WorldBounds, SpatialGridSystem, RandomMovementSystem, FlockingSystem}; // Import systems and resources
-use eusociety_transport::{JsonSerializer, BinarySerializer, StdioSender, Serializer, Sender};
-
-#[cfg(feature = "websocket")]
-use eusociety_transport::WebSocketSender;
-
-use std::path::PathBuf;
+use eusociety_config::{load_config, parse_position_component, ConfigError}; // Removed unused Config
+use eusociety_core::{Scheduler, World};
+use eusociety_simulation::random_movement_system;
+use eusociety_transport::{create_sender, create_serializer, TransportError}; // Removed unused Sender, Serializer traits (using Box<dyn Trait>)
+use log::{error, info, warn}; // Using log crate
+use spin_sleep; // For accurate sleeping
+use std::error::Error;
+use std::process::exit;
+// Removed unused std::thread
 use std::time::{Duration, Instant};
-use std::thread::sleep;
-use std::process;
-use rand::Rng;
+use thiserror::Error;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Path to the simulation configuration file
-    #[arg(short, long, default_value = "config.json")]
-    config: PathBuf,
+#[derive(Error, Debug)]
+enum RunnerError {
+    #[error("Configuration error: {0}")]
+    Config(#[from] ConfigError),
+    #[error("Transport initialization error: {0}")]
+    Transport(#[from] TransportError),
+    #[error("Component parsing error: {0}")]
+    ComponentParse(String),
+    #[error("Runtime transport error: {0}")]
+    RuntimeTransport(TransportError), // Separate variant for errors within the loop
 }
 
 fn main() {
-    println!("Eusociety Simulation Runner");
-    
-    // Parse command line arguments
-    let args = Args::parse();
-    
-    // Load configuration
-    let config = match load_config(&args.config) {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("Failed to load config: {:?}", e);
-            process::exit(1);
-        }
-    };
+    // Initialize logger (optional, but helpful)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    println!("Using configuration from {}", args.config.display());
-    
-    // Initialize the world
+    info!("Starting Eusociety Simulation Runner...");
+
+    if let Err(e) = run_simulation() {
+        error!("Simulation failed: {}", e);
+        // Print cause chain if available
+        let mut source = e.source();
+        while let Some(cause) = source {
+            error!("  Caused by: {}", cause);
+            source = cause.source();
+        }
+        exit(1);
+    }
+
+    info!("Simulation finished successfully.");
+}
+
+fn run_simulation() -> Result<(), RunnerError> {
+    // 1. Load Configuration
+    // TODO: Make config path configurable via command line args
+    let config_path = "config-json.json";
+    info!("Loading configuration from: {}", config_path);
+    let config = load_config(config_path)?;
+    info!(
+        "Config loaded: FPS={}, Threads={}, Transport={}/{}",
+        config.simulation.fps,
+        config.simulation.threads, // Note: M1 uses single thread regardless
+        config.transport.serializer.type_,
+        config.transport.sender.type_
+    );
+
+    // 2. Initialize World
     let mut world = World::new();
+    info!(
+        "Initializing world with {} entities from config...",
+        config.start_state.entities.len()
+    );
+    for entity_config in &config.start_state.entities {
+        // For M1, we only expect the 'position' component
+        if let Some(pos_value) = entity_config.components.get("position") {
+            let position = parse_position_component(pos_value)
+                .map_err(|e| RunnerError::ComponentParse(e.to_string()))?;
+            world.add_entity_with_position(entity_config.id, position);
+        } else {
+            warn!(
+                "Entity {} in config is missing 'position' component, skipping.",
+                entity_config.id
+            );
+        }
+    }
+    info!("World initialized.");
 
-    // --- Add Core Resources ---
-    let bounds = WorldBounds {
-        min_x: -config.world_settings.width / 2.0,
-        max_x: config.world_settings.width / 2.0,
-        min_y: -config.world_settings.height / 2.0,
-        max_y: config.world_settings.height / 2.0,
-    };
-    world.add_resource(bounds.clone()); // Add bounds resource
-
-    // Calculate frame duration from config framerate
-    let frame_duration = Duration::from_secs_f64(1.0 / config.framerate as f64);
-    let initial_dt = frame_duration.as_secs_f32();
-    world.add_resource(DeltaTime(initial_dt)); // Add initial DeltaTime
-
-    // Initialize entities (remains similar)
-    initialize_world(&mut world, &config);
-
-    // --- Setup Scheduler and Systems ---
+    // 3. Initialize Scheduler
     let mut scheduler = Scheduler::new();
-    scheduler.with_fixed_timestep(frame_duration.as_millis() as u64); // Use fixed timestep
+    // Add systems defined for the simulation
+    scheduler.add_system(random_movement_system);
+    info!("Scheduler initialized with systems.");
 
-    // Register SpatialGrid system (needed for flocking)
-    scheduler.add_system(SpatialGridSystem::default());
+    // 4. Initialize Transport
+    info!("Initializing transport...");
+    let serializer = create_serializer(&config.transport.serializer.type_)?;
+    let mut sender = create_sender(
+        &config.transport.sender.type_,
+        &config.transport.sender.options,
+    )?;
+    info!("Transport initialized.");
 
-    // Register behavior system based on first config entry (M1 simplification)
-    if let Some(first_entity_config) = config.initial_state.first() {
-        match first_entity_config.behavior {
-            BehaviorType::Random => {
-                println!("Using RandomMovementSystem");
-                scheduler.add_system(RandomMovementSystem::default());
-            }
-            BehaviorType::Flocking => {
-                println!("Using FlockingSystem");
-                // Use defaults if flocking settings are missing in config
-                let flock_settings = first_entity_config.get_flocking_settings().unwrap_or_else(|| {
-                    println!("Flocking settings not found in config, using defaults.");
-                    // Manually create default FlockingSettings if needed, assuming eusociety_config provides defaults
-                    // If not, define them here or ensure eusociety_config has a Default impl
-                     eusociety_config::FlockingSettings {
-                         perception_radius: 10.0, // Example default
-                         separation_weight: 0.5, // Example default
-                         alignment_weight: 0.3, // Example default
-                         cohesion_weight: 0.2, // Example default
-                     }
-                });
-                 scheduler.add_system(FlockingSystem::new(
-                    flock_settings.perception_radius,
-                    flock_settings.separation_weight,
-                    flock_settings.alignment_weight,
-                    flock_settings.cohesion_weight,
-                ));
-            }
-            _ => { // Default to random
-                 println!("Defaulting to RandomMovementSystem for behavior type: {:?}", first_entity_config.behavior);
-                 scheduler.add_system(RandomMovementSystem::default());
-            }
-        }
-    } else {
-        println!("No initial state defined, adding RandomMovementSystem by default.");
-        scheduler.add_system(RandomMovementSystem::default());
-    }
+    // 5. Simulation Loop
+    let target_fps = config.simulation.fps;
+    let target_frame_duration = Duration::from_secs_f64(1.0 / target_fps as f64);
+    info!(
+        "Starting simulation loop (Target FPS: {}, Target Frame Time: {:?})",
+        target_fps, target_frame_duration
+    );
 
-    // --- Setup Transport (remains similar) ---
-    // Create the appropriate serializer based on config
-    let serializer: Box<dyn Serializer> = create_serializer(&config);
-    
-    // Create the appropriate sender based on config
-    let mut sender = create_sender(&config);
+    let mut frame_count: u64 = 0;
+    let simulation_start_time = Instant::now();
+    let mut last_log_time = Instant::now();
 
-    println!("Running simulation at {} FPS...", config.framerate);
-    match config.transport.sender.sender_type {
-        SenderType::WebSocket => {
-            #[cfg(feature = "websocket")]
-            {
-                let ws_options = config.transport.sender.get_websocket_options();
-                println!("WebSocket server listening on ws://{}:{}", 
-                    ws_options.host, ws_options.port);
-                println!("Open the frontend HTML page to visualize the simulation");
-            }
-            #[cfg(not(feature = "websocket"))]
-            {
-                eprintln!("WebSocket sender configured but websocket feature is not enabled!");
-                process::exit(1);
-            }
-        },
-        SenderType::Stdio => println!("Sending simulation data to standard output"),
-    }
-    
-    // Simulation loop
+    // For simplicity in M1, run for a fixed number of frames or duration
+    let max_frames = target_fps * 10; // Run for 10 seconds
+
     loop {
-        let frame_start = Instant::now();
+        let frame_start_time = Instant::now();
 
-        // Calculate actual delta time for this frame (using fixed duration for now)
-        let delta_seconds = frame_duration.as_secs_f32();
-        world.add_resource(DeltaTime(delta_seconds)); // Update DeltaTime resource
+        // --- Run Systems ---
+        scheduler.run(&mut world);
 
-        // --- Execute Systems ---
-        scheduler.execute_once(&mut world); // Run registered systems
+        // --- Transport Data ---
+        let serialized_data = serializer
+            .serialize(&world)
+            .map_err(RunnerError::RuntimeTransport)?;
 
-        // --- Serialize and Send (remains similar) ---
-        if let Ok(data) = serializer.serialize(&world) {
-            // Send data
-            if let Err(e) = sender.send(data.as_bytes()) {
-                eprintln!("Error sending data: {:?}", e);
-                // Consider breaking the loop or handling differently if send fails repeatedly
+        sender
+            .send(&serialized_data)
+            .map_err(RunnerError::RuntimeTransport)?;
+
+        // --- Frame Pacing ---
+        let elapsed_time = frame_start_time.elapsed();
+
+        if let Some(sleep_duration) = target_frame_duration.checked_sub(elapsed_time) {
+            if !sleep_duration.is_zero() {
+                // Use spin_sleep for potentially more accurate short sleeps
+                spin_sleep::sleep(sleep_duration);
             }
+        } else {
+            warn!(
+                "Frame {} took longer than target time: {:?} >= {:?}",
+                frame_count, elapsed_time, target_frame_duration
+            );
         }
 
-        // --- Frame Rate Control (remains similar) ---
-        let elapsed = frame_start.elapsed();
-        if elapsed < frame_duration {
-            sleep(frame_duration - elapsed);
-        } else if config.framerate > 10 {
-            // Only show warning if target framerate is high enough to matter
-            eprintln!("Frame time exceeded budget: {:?} > {:?}", elapsed, frame_duration);
+        frame_count += 1;
+
+        // --- Logging & Exit Condition ---
+        let now = Instant::now();
+        if now.duration_since(last_log_time) >= Duration::from_secs(1) {
+            let total_elapsed = simulation_start_time.elapsed().as_secs_f64();
+            let avg_fps = frame_count as f64 / total_elapsed;
+            info!(
+                "Frame: {}, Elapsed Time: {:.2}s, Avg FPS: {:.2}",
+                frame_count, total_elapsed, avg_fps
+            );
+            last_log_time = now;
         }
-    }
-}
 
-fn initialize_world(world: &mut World, config: &Config) {
-    let mut rng = rand::thread_rng();
-
-    // Get world bounds resource and clone values to release the borrow
-    let (min_x, max_x, min_y, max_y) = {
-        let bounds = world.get_resource::<WorldBounds>().expect("WorldBounds resource missing during initialization");
-        (bounds.min_x, bounds.max_x, bounds.min_y, bounds.max_y)
-    }; // Immutable borrow of world ends here
-
-    // Initialize entities based on config
-    for entity_config in &config.initial_state {
-        println!("Creating {} '{}' entities", entity_config.count, entity_config.entity_type);
-        
-        for _ in 0..entity_config.count {
-            let entity = world.create_entity();
-            world.spawn(entity); // <--- Add this line to register the entity in the world's main map
-            // Initialize with random position using cloned bounds
-            let x = rng.gen_range(min_x..max_x);
-            let y = rng.gen_range(min_y..max_y);
-            world.add_component(entity, Position { x, y }); // Mutable borrow of world is now fine
-
-            // Initialize with random velocity
-            let speed = match entity_config.behavior {
-                BehaviorType::Random => 5.0 + rng.gen::<f32>() * 5.0,
-                BehaviorType::Flocking => {
-                    if let Some(settings) = entity_config.get_flocking_settings() {
-                        2.0 + rng.gen::<f32>() * 3.0
-                    } else {
-                        3.0
-                    }
-                },
-                _ => 3.0,
-            };
-            
-            let angle = rng.gen::<f32>() * std::f32::consts::TAU;
-            let vx = angle.cos() * speed;
-            let vy = angle.sin() * speed;
-
-            world.add_component(entity, Velocity { x: vx, y: vy }); // Mutable borrow of world is also fine here
+        // Convert max_frames to u64 for comparison
+        if frame_count >= max_frames as u64 {
+            info!("Reached max frames ({}), stopping simulation.", max_frames);
+            break;
         }
-    }
-}
 
-// Removed the old update_entities function and its helper
-
-fn create_serializer(config: &Config) -> Box<dyn Serializer> {
-    match config.transport.serializer.serializer_type {
-        SerializerType::Json => Box::new(JsonSerializer),
-        SerializerType::Binary => Box::new(BinarySerializer),
+        // Add a small yield to prevent pegging CPU if loop is too fast,
+        // though spin_sleep should handle most cases.
+        // thread::yield_now();
     }
-}
 
-#[allow(unused_variables)]
-fn create_sender(config: &Config) -> Box<dyn Sender> {
-    match config.transport.sender.sender_type {
-        SenderType::Stdio => Box::new(StdioSender::new()),
-        SenderType::WebSocket => {
-            #[cfg(feature = "websocket")]
-            {
-                // Get WebSocket options from config
-                let options = config.transport.sender.get_websocket_options();
-                let mut ws_sender = WebSocketSender::new(&options.host, options.port);
-                
-                // Start the WebSocket server
-                if let Err(e) = ws_sender.start() {
-                    eprintln!("Failed to start WebSocket server: {:?}", e);
-                    process::exit(1);
-                }
-                
-                return Box::new(ws_sender);
-            }
-            
-            #[cfg(not(feature = "websocket"))]
-            {
-                eprintln!("WebSocket sender configured but websocket feature is not enabled!");
-                process::exit(1);
-            }
-        }
-    }
+    Ok(())
 }

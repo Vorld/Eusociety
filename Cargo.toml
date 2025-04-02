@@ -23,6 +23,8 @@ rand = "0.8"
 rayon = "1.7"
 thiserror = "1.0"
 log = "0.4"
+bincode = "1.3" # For binary serialization
+spin_sleep = "1.1" # For accurate frame pacing
 
 [profile.dev]
 opt-level = 1  # Slightly better performance in development

@@ -236,7 +236,8 @@ class EusocietyWebGLRenderer {
         this.view.zoom += (this.view.targetZoom - this.view.zoom) * this.view.lerpFactor;
 
         // --- Drawing ---
-        this.resize(); // Check resize
+        this.resize(); // Che
+        // ck resize
         gl.clearColor(0,0,0,0); // Dark background
         gl.clear(gl.COLOR_BUFFER_BIT);
 
