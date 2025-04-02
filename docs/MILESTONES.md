@@ -61,21 +61,20 @@
 
 **Validation:** Ran simulation with registered systems, verified correct execution order based on manual `impl System` dependencies. Macro compiles and works for simple cases but errors correctly for unsupported complex signatures.
 
-### Milestone 2.4: Parallel Scheduling Foundation [TODO]
+### Milestone 2.4: Parallel Scheduling Foundation [COMPLETED]
 
 **Goal:** Implement the core logic for a parallel-capable scheduler by analyzing system dependencies, calculating execution stages, and introducing `rayon`. Focus on correct sequential staging based on dependencies.
 
 **Tasks:**
-- Define dependency graph representation (`DependencyGraph`)
-- Implement graph construction logic (`build_dependency_graph`)
-- Implement execution stage calculation (e.g., Kahn's algorithm in `calculate_execution_stages`)
-- Add `rayon` dependency
-- Update `SystemScheduler` to build graph and calculate stages dynamically in `run`
-- Update `SystemScheduler::run` to execute systems sequentially stage-by-stage
-- Add/Update tests for scheduling logic (graph building, stage calculation, execution order)
-- Document new scheduling mechanism and limitations
+- Defined `DependencyGraph` type alias and implemented `build_dependency_graph` function in `scheduler.rs` to construct a graph based on `SystemAccess` conflicts (Read/Write on components/resources).
+- Implemented `calculate_execution_stages` using Kahn's algorithm (topological sort) with cycle detection.
+- Added `rayon` dependency to `eusociety-core` and the workspace.
+- Updated `SystemScheduler::run` to dynamically build the dependency graph and calculate stages on each run.
+- Modified `SystemScheduler::run` to execute systems sequentially based on the calculated stages, ensuring dependencies are respected regardless of registration order.
+- Added unit tests for graph building, stage calculation (including cycle detection), and an integration test (`test_scheduler_execution_order`) verifying correct execution order.
+- Updated documentation (`scheduler.rs` doc comments and `docs/Documentation.md`) to reflect the new dependency-aware scheduling and its current limitations (sequential execution within stages).
 
-**Validation:** Simulation runs correctly with the new scheduler. Systems are executed in an order that respects their data dependencies, grouped into stages.
+**Validation:** Simulation runs correctly with the new scheduler. Systems are executed in an order that respects their data dependencies, grouped into stages. All tests in `eusociety-core` pass, including specific tests for graph building, stage calculation, cycle detection, and execution order.
 
 ### Milestone 2.5: True Parallel Execution & Ergonomics [TODO]
 

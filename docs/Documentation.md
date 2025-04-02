@@ -1,4 +1,4 @@
-# Eusociety Engine Documentation (as of M2.3)
+# Eusociety Engine Documentation (as of M2.4)
 
 ## 1. Overview
 
@@ -199,7 +199,12 @@ This generates `struct PrintTimeSystemSystem` which implements `System`.
 The `eusociety_core::SystemScheduler` is responsible for running registered systems.
 
 *   **Registration:** Systems are added using `scheduler.add_system(MySystem)`. The scheduler checks for immediate conflicts (e.g., two systems writing to the same resource) based on the `access()` declaration and returns `false` if found. `add_system_unchecked` bypasses this check.
-*   **Execution:** Calling `scheduler.run(&mut world)` executes the systems. Currently (M2.3), systems are run **sequentially** in the order they were added (if no conflicts were detected by `add_system`) or in the order added via `add_system_unchecked`. Dependency analysis for ordering is planned for M2.4.
+*   **Execution:** Calling `scheduler.run(&mut world)` executes the systems. As of M2.4, the scheduler performs dependency analysis based on the `access()` declarations:
+    *   It builds a dependency graph between systems.
+    *   It calculates execution "stages" using topological sort (Kahn's algorithm). Systems within a stage have no dependencies on each other *according to the graph*.
+    *   It executes systems stage by stage. **Crucially, systems within the same stage are still executed sequentially** in this version due to the `System::run(&mut World)` signature requiring exclusive world access.
+    *   If a dependency cycle is detected (e.g., System A needs to run before B, and B needs to run before A), the scheduler will panic when `run` is called.
+    *   This lays the foundation for future parallel execution (M2.5), but does not enable it yet. The primary benefit in M2.4 is ensuring correct execution order based on declared data access, regardless of registration order.
 
 ```rust
 use eusociety_core::{SystemScheduler, World};
@@ -281,7 +286,7 @@ These are configured in `config.json` and instantiated by the runner.
     *   For simple cases (see rules above), use `#[system]` on a function.
     *   For complex cases (mixing `&mut T` with other params, or `ResMut<T>` with components), create a struct and manually implement the `System` trait (`access` and `run` methods).
 4.  **Configure `config.json`:** Set up initial entities, resources, simulation parameters, and transport.
-5.  **Update Runner (if needed):** Import and register your systems in `eusociety-runner/src/main.rs`'s `run_simulation` function using `scheduler.add_system(...)`.
+5.  **Update Runner (if needed):** Import and register your systems in `eusociety-runner/src/main.rs`'s `run_simulation` function using `scheduler.add_system(...)` or `scheduler.add_system_unchecked(...)`. Ensure the `access()` method correctly declares dependencies.
 6.  **Run:** Execute `cargo run --bin eusociety-runner`.
 
-This documentation reflects the state after Milestone 2.3. Future milestones will introduce parallel scheduling (M2.4), improved system ergonomics (M2.5), and WebSocket transport (M2.6).
+This documentation reflects the state after Milestone 2.4. Future milestones will introduce improved system ergonomics and initial parallel execution attempts (M2.5), and WebSocket transport (M2.6).
