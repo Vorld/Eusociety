@@ -20,7 +20,7 @@
 
 **Goal:** Refactor the core ECS for better performance and extensibility, introducing compile-time registration, basic parallel execution and websocket transport.
 
-### Milestone 2.1: Core Component System Refactoring [TODO]
+### Milestone 2.1: Core Component System Refactoring [COMPLETED]
 
 **Goal:** Improve the foundational data structures while maintaining compatibility with existing systems.
 
