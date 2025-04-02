@@ -16,9 +16,9 @@
 
 ---
 
-## Milestone 2: Enhanced ECS Core, Basic Parallelism & Websocket Support [TODO]
+## Milestone 2: Enhanced ECS Core, Parallelism & Websocket Support [IN PROGRESS]
 
-**Goal:** Refactor the core ECS for better performance and extensibility, introducing compile-time registration, basic parallel execution and websocket transport.
+**Goal:** Refactor the core ECS for better performance and extensibility, introducing compile-time registration, parallel execution foundation, and websocket transport.
 
 ### Milestone 2.1: Core Component System Refactoring [COMPLETED]
 
@@ -32,7 +32,7 @@
 - Update `World` to use generic component storage
 - Update existing code to use the new component system
 
-**Validation:** Run existing simulation with new component system - output should match previous results.
+**Validation:** Run existing simulation with new component system - output matched previous results.
 
 ### Milestone 2.2: Resource Management [COMPLETED]
 
@@ -45,56 +45,61 @@
 - Create accessor methods for resources
 - Update configuration to populate initial resources
 
-**Validation:** Enhance simulation to use `DeltaTime` resource, verify system access to global resources.
+**Validation:** Enhanced simulation to use `DeltaTime` resource, verified system access to global resources.
 
-### Milestone 2.3: System Registration and Dependencies [TODO]
+### Milestone 2.3: System Registration and Dependencies [COMPLETED]
 
 **Goal:** Formalize how systems declare their component needs.
 
 **Tasks:**
-- Define system access patterns (read/write)
-- Implement `System` trait with dependency declarations
-- Create `#[system]` procedural macro
-- Refactor `random_movement_system` to use new approach
-- Create registry for systems with dependency information
-- *Note:* The `SystemParam` pattern (for ergonomic parameter injection like Bevy) was considered but deferred to keep M2.3 focused. It can be revisited later.
+- Define system access patterns (read/write) (`AccessType`, `DataAccess`, `SystemAccess`)
+- Implement `System` trait with dependency declarations (`access` method)
+- Create `#[system]` procedural macro (with limitations due to borrow checking)
+- Refactor `random_movement_system` to use manual `impl System` (as macro doesn't support its signature)
+- Create registry (`SystemRegistry`) and scheduler (`SystemScheduler`) storing systems and access info
+- Implement basic conflict detection in registry
 
-**Validation:** Run simulation with registered systems, verify correct execution with explicit dependencies.
+**Validation:** Ran simulation with registered systems, verified correct execution order based on manual `impl System` dependencies. Macro compiles and works for simple cases but errors correctly for unsupported complex signatures.
 
-### Milestone 2.4: Parallel Execution [TODO]
+### Milestone 2.4: Parallel Scheduling Foundation [TODO]
 
-**Goal:** Enable parallel system execution.
-
-**Tasks:**
-- Add Rayon dependency
-- Implement dependency analysis algorithm
-- Create parallel scheduler
-- Integrate with configuration (thread count)
-- Update runner to use parallel execution when configured
-
-**Validation:** Compare execution of sequential vs. parallel scheduler with varying system counts.
-
-### Milestone 2.5: Benchmarking [TODO]
-
-**Goal:** Measure performance improvements.
+**Goal:** Implement the core logic for a parallel-capable scheduler by analyzing system dependencies, calculating execution stages, and introducing `rayon`. Focus on correct sequential staging based on dependencies.
 
 **Tasks:**
-- Set up benchmarking crate with Criterion
-- Create benchmarks for component storage (old vs. new)
-- Benchmark sequential vs. parallel execution
-- Implement end-to-end simulation benchmarks
-- Document performance findings
+- Define dependency graph representation (`DependencyGraph`)
+- Implement graph construction logic (`build_dependency_graph`)
+- Implement execution stage calculation (e.g., Kahn's algorithm in `calculate_execution_stages`)
+- Add `rayon` dependency
+- Update `SystemScheduler` to build graph and calculate stages dynamically in `run`
+- Update `SystemScheduler::run` to execute systems sequentially stage-by-stage
+- Add/Update tests for scheduling logic (graph building, stage calculation, execution order)
+- Document new scheduling mechanism and limitations
 
-**Validation:** Run benchmarks and verify improved performance.
+**Validation:** Simulation runs correctly with the new scheduler. Systems are executed in an order that respects their data dependencies, grouped into stages.
+
+### Milestone 2.5: True Parallel Execution & Ergonomics [TODO]
+
+**Goal:** Enable true parallel system execution and improve system definition ergonomics.
+
+**Tasks:**
+- Define and implement `SystemParam` trait for `Query`, `Res`, `ResMut`, `Commands`, etc.
+- Refactor `System` trait to use `SystemParam` instead of `&mut World`.
+- Refactor `World` internals to support safe concurrent access (likely involves `unsafe`).
+- Update `#[system]` macro to work with `SystemParam`, removing borrow check limitations.
+- Update `SystemScheduler` to use `rayon` to execute systems *within* stages in parallel.
+- Set up benchmarking crate (`criterion`) and create benchmarks for sequential vs. parallel execution.
+- Document performance findings and improved macro usage.
+
+**Validation:** Compare execution of sequential vs. parallel scheduler with varying system counts, demonstrating performance scaling. Verify macro works for previously unsupported signatures.
 
 ### Milestone 2.6: WebSocket Transport [TODO]
 
 **Goal:** Enable real-time visualization.
 
 **Tasks:**
-- Implement WebSocket sender
-- Integrate with existing serializers
-- Update configuration to support WebSocket settings
-- Create basic HTML/JS client for visualization
+- Implement WebSocket sender (`WebSocketSender`) using a suitable crate (e.g., `tungstenite`).
+- Integrate with existing serializers.
+- Update configuration to support WebSocket settings (address, port).
+- Create basic HTML/JS client for visualization (e.g., using `three.js` or simple canvas).
 
-**Validation:** Connect web browser to simulation and verify data reception.
+**Validation:** Connect web browser to simulation and verify real-time data reception and basic visualization.

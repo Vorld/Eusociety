@@ -45,7 +45,7 @@ fn main() {
 fn run_simulation() -> Result<(), RunnerError> {
     // 1. Load Configuration
     // TODO: Make config path configurable via command line args
-    let config_path = "stress_config.json";
+    let config_path = "config.json";
     info!("Loading configuration from: {}", config_path);
     let config = load_config(config_path)?;
     info!(
