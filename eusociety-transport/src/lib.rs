@@ -1,4 +1,4 @@
-use eusociety_core::World;
+use eusociety_core::{World, Position, Entity};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -46,9 +46,15 @@ pub struct BinarySerializer;
 
 impl Serializer for BinarySerializer {
     fn serialize(&self, world: &World) -> Result<Vec<u8>, TransportError> {
-        // M1: Serialize only the positions. In the future, this could be more complex,
-        // potentially taking hints from config or serializing the whole World.
-        Ok(bincode::serialize(&world.storage.positions)?)
+        // Convert the positions from the new component system to a HashMap for serialization
+        let mut positions_map: HashMap<Entity, Position> = HashMap::new();
+        
+        // Use the query API to collect all positions
+        for (entity, pos) in world.components.query::<Position>() {
+            positions_map.insert(entity, *pos);
+        }
+        
+        Ok(bincode::serialize(&positions_map)?)
     }
 }
 
@@ -57,8 +63,15 @@ pub struct JsonSerializer;
 
 impl Serializer for JsonSerializer {
     fn serialize(&self, world: &World) -> Result<Vec<u8>, TransportError> {
+        // Convert the positions from the new component system to a HashMap for serialization
+        let mut positions_map: HashMap<Entity, Position> = HashMap::new();
+        
+        for (entity, pos) in world.components.query::<Position>() {
+            positions_map.insert(entity, *pos);
+        }
+        
         // Serialize the positions to pretty-printed JSON for readability
-        let json_data = serde_json::to_string_pretty(&world.storage.positions)?;
+        let json_data = serde_json::to_string_pretty(&positions_map)?;
         Ok(json_data.into_bytes())
     }
 }
@@ -166,8 +179,10 @@ mod tests {
     #[test]
     fn test_binary_serializer() {
         let mut world = World::new();
-        world.add_entity_with_position(0, Position { x: 1.0, y: 2.0 });
-        world.add_entity_with_position(1, Position { x: 3.0, y: 4.0 });
+        let e0: Entity = 0;
+        let e1: Entity = 1;
+        world.add_component(e0, Position { x: 1.0, y: 2.0 });
+        world.add_component(e1, Position { x: 3.0, y: 4.0 });
 
         let serializer = BinarySerializer;
         let data = serializer.serialize(&world).unwrap();
@@ -182,8 +197,10 @@ mod tests {
     #[test]
     fn test_json_serializer() {
         let mut world = World::new();
-        world.add_entity_with_position(0, Position { x: 1.0, y: 2.0 });
-        world.add_entity_with_position(1, Position { x: 3.0, y: 4.0 });
+        let e0: Entity = 0;
+        let e1: Entity = 1;
+        world.add_component(e0, Position { x: 1.0, y: 2.0 });
+        world.add_component(e1, Position { x: 3.0, y: 4.0 });
 
         let serializer = JsonSerializer;
         let data = serializer.serialize(&world).unwrap();

@@ -5,9 +5,11 @@ members = [
     "eusociety-transport",
     "eusociety-simulation",
     "eusociety-runner",
+    "eusociety-macros",
     # "eusociety-benchmarks", # Add later when needed
-    # "eusociety-macros",     # Add later if needed
 ]
+
+resolver = "2" 
 
 [workspace.package]
 version = "0.1.0"

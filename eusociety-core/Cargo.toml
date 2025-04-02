@@ -8,3 +8,4 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true # For deriving Serialize/Deserialize on Position, World, etc.
+eusociety-macros = { path = "../eusociety-macros" }

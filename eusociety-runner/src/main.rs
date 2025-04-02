@@ -1,5 +1,5 @@
 use eusociety_config::{load_config, parse_position_component, ConfigError}; // Removed unused Config
-use eusociety_core::{Scheduler, World};
+use eusociety_core::{World, Scheduler};
 use eusociety_simulation::random_movement_system;
 use eusociety_transport::{create_sender, create_serializer, TransportError}; // Removed unused Sender, Serializer traits (using Box<dyn Trait>)
 use log::{error, info, warn}; // Using log crate
@@ -67,7 +67,7 @@ fn run_simulation() -> Result<(), RunnerError> {
         if let Some(pos_value) = entity_config.components.get("position") {
             let position = parse_position_component(pos_value)
                 .map_err(|e| RunnerError::ComponentParse(e.to_string()))?;
-            world.add_entity_with_position(entity_config.id, position);
+            world.add_component(entity_config.id, position);
         } else {
             warn!(
                 "Entity {} in config is missing 'position' component, skipping.",
