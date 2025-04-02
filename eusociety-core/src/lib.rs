@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::any::{TypeId, Any};
+use std::time::Duration;
 pub use eusociety_macros::Component;
 
 // Basic Entity ID
@@ -163,11 +164,109 @@ impl ComponentStorage {
     }
 }
 
-// Updated World with the new component storage
+/// Marker trait for types that can be stored as global resources in the World.
+/// 
+/// Resources represent global shared state that can be accessed by systems,
+/// as opposed to components which are associated with specific entities.
+/// Only one instance of a resource type can exist in the World at any time.
+/// 
+/// # Examples of appropriate resources:
+/// - Game time / delta time
+/// - Physics constants
+/// - Global game state
+/// - Asset managers
+/// 
+/// Resources must be `Send + Sync` to ensure thread-safety for future
+/// parallel system execution.
+pub trait Resource: 'static + Send + Sync {}
+
+/// A resource that tracks the time elapsed between frames
+#[derive(Debug, Clone, Copy)]
+pub struct DeltaTime {
+    /// The duration of the last frame in seconds
+    pub delta_seconds: f32,
+    /// The raw duration object
+    pub delta: Duration,
+}
+
+impl Default for DeltaTime {
+    fn default() -> Self {
+        Self {
+            delta_seconds: 0.0,
+            delta: Duration::from_secs(0),
+        }
+    }
+}
+
+impl DeltaTime {
+    /// Create a new DeltaTime from a Duration
+    pub fn new(duration: Duration) -> Self {
+        Self {
+            delta_seconds: duration.as_secs_f32(),
+            delta: duration,
+        }
+    }
+    
+    /// Update the DeltaTime with a new Duration
+    pub fn update(&mut self, duration: Duration) {
+        self.delta = duration;
+        self.delta_seconds = duration.as_secs_f32();
+    }
+}
+
+impl Resource for DeltaTime {}
+
+// Resource storage container
+pub struct ResourceStorage {
+    resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
+}
+
+impl Default for ResourceStorage {
+    fn default() -> Self {
+        Self {
+            resources: HashMap::new(),
+        }
+    }
+}
+
+impl ResourceStorage {
+    pub fn insert<T: Resource>(&mut self, resource: T) {
+        let type_id = TypeId::of::<T>();
+        self.resources.insert(type_id, Box::new(resource));
+    }
+    
+    pub fn get<T: Resource>(&self) -> Option<&T> {
+        let type_id = TypeId::of::<T>();
+        self.resources.get(&type_id)
+            .and_then(|boxed| boxed.downcast_ref::<T>())
+    }
+    
+    pub fn get_mut<T: Resource>(&mut self) -> Option<&mut T> {
+        let type_id = TypeId::of::<T>();
+        self.resources.get_mut(&type_id)
+            .and_then(|boxed| boxed.downcast_mut::<T>())
+    }
+    
+    pub fn remove<T: Resource>(&mut self) -> Option<T> {
+        let type_id = TypeId::of::<T>();
+        if let Some(boxed) = self.resources.remove(&type_id) {
+            boxed.downcast().ok().map(|boxed| *boxed)
+        } else {
+            None
+        }
+    }
+    
+    pub fn contains<T: Resource>(&self) -> bool {
+        let type_id = TypeId::of::<T>();
+        self.resources.contains_key(&type_id)
+    }
+}
+
+// Updated World with component and resource storage
 #[derive(Default)]
 pub struct World {
     pub components: ComponentStorage,
-    // We can add global resources here later (e.g., delta_time, gravity)
+    pub resources: ResourceStorage,
 }
 
 impl World {
@@ -175,6 +274,7 @@ impl World {
         Self::default()
     }
     
+    // Entity and component methods
     pub fn create_entity(&mut self) -> Entity {
         self.components.create_entity()
     }
@@ -193,6 +293,27 @@ impl World {
     
     pub fn remove_component<T: Component>(&mut self, entity: Entity) -> Option<T> {
         self.components.remove_component(entity)
+    }
+    
+    // Resource methods
+    pub fn insert_resource<T: Resource>(&mut self, resource: T) {
+        self.resources.insert(resource);
+    }
+    
+    pub fn get_resource<T: Resource>(&self) -> Option<&T> {
+        self.resources.get::<T>()
+    }
+    
+    pub fn get_resource_mut<T: Resource>(&mut self) -> Option<&mut T> {
+        self.resources.get_mut::<T>()
+    }
+    
+    pub fn remove_resource<T: Resource>(&mut self) -> Option<T> {
+        self.resources.remove::<T>()
+    }
+    
+    pub fn has_resource<T: Resource>(&self) -> bool {
+        self.resources.contains::<T>()
     }
 }
 
@@ -230,10 +351,8 @@ mod tests {
 
     fn test_system(world: &mut World) {
         // Iterate over all positions and move them
-        if let Some(storage) = world.components.get_component_storage_mut::<Position>() {
-            for (_, pos) in storage.iter_mut() {
-                pos.x += 1.0;
-            }
+        for (_, pos) in world.components.query_mut::<Position>() {
+            pos.x += 1.0;
         }
     }
 
@@ -280,5 +399,42 @@ mod tests {
         }
         
         assert_eq!(world.get_component::<Health>(entity).unwrap().value, 70);
+    }
+
+    #[test]
+    fn test_resource_management() {
+        #[derive(Debug, Clone, PartialEq)]
+        struct TestResource {
+            value: i32,
+        }
+        
+        impl Resource for TestResource {}
+        
+        let mut world = World::new();
+        
+        // Test inserting and retrieving a resource
+        world.insert_resource(TestResource { value: 42 });
+        assert_eq!(world.get_resource::<TestResource>().unwrap().value, 42);
+        
+        // Test modifying a resource
+        if let Some(res) = world.get_resource_mut::<TestResource>() {
+            res.value = 100;
+        }
+        assert_eq!(world.get_resource::<TestResource>().unwrap().value, 100);
+        
+        // Test has_resource
+        assert!(world.has_resource::<TestResource>());
+        assert!(!world.has_resource::<DeltaTime>());
+        
+        // Test removing a resource
+        let removed = world.remove_resource::<TestResource>().unwrap();
+        assert_eq!(removed.value, 100);
+        assert!(!world.has_resource::<TestResource>());
+        
+        // Test inserting DeltaTime resource
+        let dt = DeltaTime::new(Duration::from_millis(16));
+        world.insert_resource(dt);
+        assert!(world.has_resource::<DeltaTime>());
+        assert_eq!(world.get_resource::<DeltaTime>().unwrap().delta_seconds, 0.016);
     }
 }

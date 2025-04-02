@@ -17,5 +17,8 @@
     "serializer": {"type": "json"},
     "sender": {"type": "file", "options": {"path": "output.json"}}
   },
-  "simulation": {"threads": 1, "fps": 60}
+  "simulation": {"threads": 1, "fps": 120},
+  "initial_resources": {
+    "DeltaTime": {"delta_seconds": 0.0166}
+  }
 }

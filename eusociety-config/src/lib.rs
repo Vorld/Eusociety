@@ -1,4 +1,4 @@
-use eusociety_core::Position; // Use Position from core
+use eusociety_core::{Position, DeltaTime}; // Add DeltaTime import
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -60,6 +60,8 @@ pub struct Config {
     pub start_state: StartStateConfig,
     pub transport: TransportConfig,
     pub simulation: SimulationConfig,
+    #[serde(default)]
+    pub initial_resources: Option<HashMap<String, serde_json::Value>>,
 }
 
 // --- Error Handling ---
@@ -113,6 +115,23 @@ pub fn parse_position_component(
     serde_json::from_value(value.clone()).map_err(|e| {
         ConfigError::ValidationError(format!("Failed to parse Position component: {}", e))
     })
+}
+
+/// Attempts to parse a DeltaTime resource from a serde_json::Value.
+/// Expects a JSON object with a "delta_seconds" field.
+pub fn parse_delta_time_resource(
+    value: &serde_json::Value,
+) -> Result<DeltaTime, ConfigError> {
+    // Try to get delta_seconds as f32
+    if let Some(seconds) = value.get("delta_seconds").and_then(|v| v.as_f64()) {
+        // Convert to Duration and create DeltaTime
+        let duration = std::time::Duration::from_secs_f64(seconds);
+        Ok(DeltaTime::new(duration))
+    } else {
+        Err(ConfigError::ValidationError(
+            "DeltaTime resource requires a 'delta_seconds' field as a number".to_string(),
+        ))
+    }
 }
 
 
@@ -193,6 +212,20 @@ mod tests {
     fn test_parse_invalid_position() {
         let json_val: serde_json::Value = serde_json::from_str(r#"{"x": 1.2}"#).unwrap(); // Missing y
         let result = parse_position_component(&json_val);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_delta_time() {
+        let json_val: serde_json::Value = serde_json::from_str(r#"{"delta_seconds": 0.016}"#).unwrap();
+        let delta_time = parse_delta_time_resource(&json_val).unwrap();
+        assert_eq!(delta_time.delta_seconds, 0.016);
+    }
+
+    #[test]
+    fn test_parse_invalid_delta_time() {
+        let json_val: serde_json::Value = serde_json::from_str(r#"{"wrong_field": 0.016}"#).unwrap();
+        let result = parse_delta_time_resource(&json_val);
         assert!(result.is_err());
     }
 }

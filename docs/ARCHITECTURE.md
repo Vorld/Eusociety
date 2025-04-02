@@ -17,11 +17,11 @@ Eusociety is a high-performance, modular simulation engine built in Rust. The pr
     *   **Purpose:** The heart of the engine. Manages the ECS (Entities, Components, Systems), World state, and the Scheduler.
     *   **Key Features (Target):**
         *   **Entities:** Lightweight IDs (e.g., `u32`).
-        *   **Components:** Plain data structs. Defined by users via `#[derive(Component)]` (macro provided by `eusociety-macros`, potentially re-exported by `eusociety-core`). Stored efficiently (e.g., sparse sets).
-        *   **Systems:** Logic units operating on components. Defined by users via `#[system]` macro (provided by `eusociety-macros`) or implementing a `System` trait. Declare data dependencies (read/write access) for the scheduler.
-        *   **World:** Holds component storage and global resources (e.g., delta time).
-        *   **Scheduler:** Manages system execution order based on declared dependencies, enabling safe parallel execution using a configurable thread pool (e.g., `rayon`).
-    *   **Milestone 1 State:** Uses `HashMap` for storage, `fn` pointers for systems, and a simple sequential scheduler. Compile-time registration and parallelism are future goals.
+        *   **Components:** Plain data structs implementing the `Component` trait, typically via `#[derive(Component)]` (macro provided by `eusociety-macros`). Stored efficiently using `Vec<Option<T>>` per component type.
+        *   **Systems:** Logic units operating on components and resources. Definition and dependency declaration are evolving (target: `#[system]` macro or `System` trait implementation).
+        *   **World:** Holds component storage (`Vec<Option<T>>` based) and global resources (e.g., `DeltaTime`). Provides accessors for components and resources.
+        *   **Scheduler:** Manages system execution order. Currently sequential, but designed to eventually leverage dependency information for parallelism (target: `rayon`).
+    *   **Milestone 2.2 State:** Uses `Vec<Option<T>>` for component storage, includes resource management. System definition uses `fn` pointers, but is targeted for refactoring in M2.3. Scheduler remains sequential.
 
 2.  **`eusociety-simulation`** (Optional Crate)
     *   **Purpose:** Provides a library of common, reusable components and systems (e.g., `Position`, `Velocity`, `RandomMovementSystem`).
@@ -43,8 +43,8 @@ Eusociety is a high-performance, modular simulation engine built in Rust. The pr
         *   Handles basic error reporting for invalid formats or values.
 
 5.  **`eusociety-macros`** (Procedural Macro Crate)
-    *   **Purpose:** Defines the procedural macros (`#[derive(Component)]`, `#[system]`) used for compile-time code generation and registration within the ECS.
-    *   **Details:** This crate will have `proc-macro = true` set in its `Cargo.toml`. It will be depended upon by `eusociety-core` (for re-exporting) and potentially directly by user crates.
+    *   **Purpose:** Defines the procedural macros (`#[derive(Component)]`, target: `#[system]`) used for compile-time code generation and integration with the ECS.
+    *   **Details:** Has `proc-macro = true` set. `#[derive(Component)]` is implemented. `#[system]` is planned for M2.3. Depended upon by `eusociety-core` and user crates defining components/systems.
 
 6.  **`eusociety-runner`**
     *   **Purpose:** The main executable crate. Initializes the engine and runs the simulation loop.
@@ -59,11 +59,11 @@ Eusociety is a high-performance, modular simulation engine built in Rust. The pr
 1.  **Startup:**
     *   `eusociety-runner` starts.
     *   `eusociety-config` loads `config.json`.
-    *   `eusociety-runner` initializes `eusociety-core::World` based on `start_state`.
-    *   `eusociety-runner` initializes `eusociety-core::Scheduler` and registers systems (currently hardcoded `random_movement_system`).
+    *   `eusociety-runner` initializes `eusociety-core::World` based on `start_state`, including initial components and resources (like `DeltaTime`).
+    *   `eusociety-runner` initializes `eusociety-core::Scheduler` and registers systems (currently hardcoded `random_movement_system` using `fn` pointers).
     *   `eusociety-runner` initializes `eusociety-transport::{Serializer, Sender}` based on config using factory functions.
 2.  **Runtime Loop:**
-    *   Calculate frame delta time (future goal).
+    *   Calculate and update frame delta time resource in the `World`.
     *   `Scheduler::run()` executes registered systems (sequentially in M1, potentially parallel later) modifying the `World` state.
     *   `Serializer::serialize()` converts relevant `World` data to bytes.
     *   `Sender::send()` transmits the byte data.
@@ -73,7 +73,7 @@ Eusociety is a high-performance, modular simulation engine built in Rust. The pr
 ## Key Trade-offs & Future Goals
 
 *   **Compile-Time vs. Runtime:** Heavily favors compile-time optimization for the core ECS loop, sacrificing some runtime flexibility in component/system registration (addressed via planned macros).
-*   **ECS Implementation:** Milestone 1 uses simplified ECS internals (`HashMap`, `fn` pointers). Future milestones will implement optimized storage and a dependency-aware parallel scheduler using procedural macros.
+*   **ECS Implementation:** Milestone 2.2 uses optimized `Vec<Option<T>>` storage and includes resource management. System definition and a dependency-aware parallel scheduler using procedural macros are the next major steps (M2.3, M2.4).
 *   **Transport Flexibility:** Uses dynamic dispatch (`Box<dyn Trait>`) for transport, accepting minor overhead for flexibility.
 *   **Configuration:** Currently simple JSON. May support more complex scenarios (scripting, external data refs) later.
 *   **External API:** An explicit API for external interaction (e.g., RL agents) is a future goal.

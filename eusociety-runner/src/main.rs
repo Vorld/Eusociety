@@ -1,5 +1,5 @@
-use eusociety_config::{load_config, parse_position_component, ConfigError}; // Removed unused Config
-use eusociety_core::{World, Scheduler};
+use eusociety_config::{load_config, parse_position_component, parse_delta_time_resource, ConfigError}; // Added parse_delta_time_resource
+use eusociety_core::{World, Scheduler, DeltaTime};
 use eusociety_simulation::random_movement_system;
 use eusociety_transport::{create_sender, create_serializer, TransportError}; // Removed unused Sender, Serializer traits (using Box<dyn Trait>)
 use log::{error, info, warn}; // Using log crate
@@ -77,6 +77,35 @@ fn run_simulation() -> Result<(), RunnerError> {
     }
     info!("World initialized.");
 
+    // Initialize resources
+    info!("Initializing resources...");
+    
+    // First initialize DeltaTime with default value
+    world.insert_resource(DeltaTime::default());
+    
+    // Then override with values from config if provided
+    if let Some(initial_resources) = &config.initial_resources {
+        info!("Processing initial resources from config...");
+        
+        // Handle DeltaTime resource if specified
+        if let Some(dt_value) = initial_resources.get("DeltaTime") {
+            match parse_delta_time_resource(dt_value) {
+                Ok(dt) => {
+                    world.insert_resource(dt);
+                    info!("Initialized DeltaTime resource from config: {}s", dt.delta_seconds);
+                },
+                Err(e) => {
+                    warn!("Failed to parse DeltaTime resource from config: {}", e);
+                    // Continue with default DeltaTime
+                }
+            }
+        }
+        
+        // Future: Handle other resource types here as they're added
+    } else {
+        info!("No initial resources specified in config, using defaults");
+    }
+
     // 3. Initialize Scheduler
     let mut scheduler = Scheduler::new();
     // Add systems defined for the simulation
@@ -106,9 +135,21 @@ fn run_simulation() -> Result<(), RunnerError> {
 
     // For simplicity in M1, run for a fixed number of frames or duration
     let max_frames = target_fps * 10; // Run for 10 seconds
+    
+    let mut prev_frame_time = Instant::now();
 
     loop {
         let frame_start_time = Instant::now();
+        
+        // Update DeltaTime resource
+        let frame_duration = frame_start_time.duration_since(prev_frame_time);
+        if let Some(dt) = world.get_resource_mut::<DeltaTime>() {
+            dt.update(frame_duration);
+        } else {
+            warn!("DeltaTime resource not found, reinitializing");
+            world.insert_resource(DeltaTime::new(frame_duration));
+        }
+        prev_frame_time = frame_start_time;
 
         // --- Run Systems ---
         scheduler.run(&mut world);

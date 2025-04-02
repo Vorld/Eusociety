@@ -34,7 +34,7 @@
 
 **Validation:** Run existing simulation with new component system - output should match previous results.
 
-### Milestone 2.2: Resource Management [TODO]
+### Milestone 2.2: Resource Management [COMPLETED]
 
 **Goal:** Add the ability to store and access shared resources.
 
@@ -57,6 +57,7 @@
 - Create `#[system]` procedural macro
 - Refactor `random_movement_system` to use new approach
 - Create registry for systems with dependency information
+- *Note:* The `SystemParam` pattern (for ergonomic parameter injection like Bevy) was considered but deferred to keep M2.3 focused. It can be revisited later.
 
 **Validation:** Run simulation with registered systems, verify correct execution with explicit dependencies.
 

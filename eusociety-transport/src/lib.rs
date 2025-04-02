@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use thiserror::Error;
+use log::debug; // Added import
 
 // --- Error Handling ---
 
@@ -128,10 +129,10 @@ impl ConsoleSender {
 
 impl Sender for ConsoleSender {
      fn send(&mut self, data: &[u8]) -> Result<(), TransportError> {
-         // Attempt to print as lossy UTF-8 for debugging, otherwise print hex
-         println!("Transport Data: {}", String::from_utf8_lossy(data));
-         // Or for binary:
-         // println!("Transport Data ({} bytes): {:02X?}", data.len(), data);
+         // Log transport data at debug level
+         debug!("Transport Data: {}", String::from_utf8_lossy(data));
+         // Example for binary data logging (if needed):
+         // debug!("Transport Data ({} bytes): {:02X?}", data.len(), data);
          Ok(())
      }
 }
@@ -261,25 +262,44 @@ mod tests {
      #[test]
     fn test_create_serializer_factory() {
         let serializer = create_serializer("binary").unwrap();
-        // We can't easily test the type of Box<dyn Trait>, but we know it succeeded.
+        // We can't easily test the exact type of Box<dyn Trait>, 
+        // but we can test that it works by serializing some data
+        let mut world = World::new();
+        let e0: Entity = 0;
+        world.add_component(e0, Position { x: 1.0, y: 2.0 });
+        
+        // This would fail if the serializer wasn't working
+        let data = serializer.serialize(&world).unwrap();
+        assert!(!data.is_empty());
+        
         let result = create_serializer("unknown");
         assert!(result.is_err());
     }
 
      #[test]
     fn test_create_sender_factory() {
-         let dir = tempdir().unwrap();
-         let file_path = dir.path().join("output.factory.bin");
-         let path_str = file_path.to_str().unwrap().to_string();
-         let options = Some(HashMap::from([(
-             "path".to_string(),
-             Value::String(path_str.clone()),
-         )]));
+        // Test file sender creation
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("output.factory.bin");
+        let path_str = file_path.to_str().unwrap().to_string();
+        
+        let options = Some(HashMap::from([(
+            "path".to_string(),
+            Value::String(path_str.clone()),
+        )]));
 
-        let sender = create_sender("file", &options).unwrap();
-         // Test console sender creation
-         let console_sender = create_sender("console", &None).unwrap();
+        let mut sender = create_sender("file", &options).unwrap();
+        // Test that sender works
+        sender.send(&[1, 2, 3]).unwrap();
+        let content = fs::read(&file_path).unwrap();
+        assert_eq!(content, vec![1, 2, 3]);
+        
+        // Test console sender creation
+        let mut console_sender = create_sender("console", &None).unwrap();
+        // Just ensure it doesn't throw an error
+        console_sender.send(&[4, 5, 6]).unwrap();
 
+        // Test error case
         let result = create_sender("unknown", &None);
         assert!(result.is_err());
     }
