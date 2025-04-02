@@ -102,6 +102,7 @@ name = "eusociety-simulation"
 version = "0.1.0"
 dependencies = [
  "eusociety-core",
+ "eusociety-macros",
  "log",
  "rand",
 ]

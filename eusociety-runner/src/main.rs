@@ -1,12 +1,12 @@
-use eusociety_config::{load_config, parse_position_component, parse_delta_time_resource, ConfigError}; // Added parse_delta_time_resource
-use eusociety_core::{World, Scheduler, DeltaTime};
-use eusociety_simulation::random_movement_system;
-use eusociety_transport::{create_sender, create_serializer, TransportError}; // Removed unused Sender, Serializer traits (using Box<dyn Trait>)
-use log::{error, info, warn}; // Using log crate
-use spin_sleep; // For accurate sleeping
+use eusociety_config::{load_config, parse_position_component, parse_delta_time_resource, ConfigError};
+use eusociety_core::{World, SystemScheduler, DeltaTime};
+// Import the manually implemented system structs
+use eusociety_simulation::{RandomMovementSystem, ResourceUsingSystem}; // Reverted names
+use eusociety_transport::{create_sender, create_serializer, TransportError};
+use log::{error, info, warn};
+use spin_sleep;
 use std::error::Error;
 use std::process::exit;
-// Removed unused std::thread
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
@@ -45,13 +45,13 @@ fn main() {
 fn run_simulation() -> Result<(), RunnerError> {
     // 1. Load Configuration
     // TODO: Make config path configurable via command line args
-    let config_path = "config-json.json";
+    let config_path = "stress_config.json";
     info!("Loading configuration from: {}", config_path);
     let config = load_config(config_path)?;
     info!(
         "Config loaded: FPS={}, Threads={}, Transport={}/{}",
         config.simulation.fps,
-        config.simulation.threads, // Note: M1 uses single thread regardless
+        config.simulation.threads,
         config.transport.serializer.type_,
         config.transport.sender.type_
     );
@@ -100,16 +100,36 @@ fn run_simulation() -> Result<(), RunnerError> {
                 }
             }
         }
-        
-        // Future: Handle other resource types here as they're added
     } else {
         info!("No initial resources specified in config, using defaults");
     }
 
-    // 3. Initialize Scheduler
-    let mut scheduler = Scheduler::new();
-    // Add systems defined for the simulation
-    scheduler.add_system(random_movement_system);
+    // 3. Initialize SystemScheduler (new for M2.3)
+    let mut scheduler = SystemScheduler::new(); // Keep only one declaration
+
+    // Add systems using the manually implemented structs
+    info!("Adding RandomMovementSystem");
+    // Instantiate the generated struct directly
+    let success = scheduler.add_system(RandomMovementSystem); // Use updated name
+    if success {
+        info!("Successfully added RandomMovementSystem");
+    } else {
+        // This warning might trigger if both systems write to Position, which they do.
+        warn!("RandomMovementSystem has conflicts with existing systems, adding anyway");
+        // For demonstration, let's add it unchecked if it conflicts.
+        // In a real scenario, you'd decide how to handle conflicts (e.g., staging).
+        scheduler.add_system_unchecked(RandomMovementSystem); // Use updated name
+    }
+
+    info!("Adding ResourceUsingSystem");
+    let success = scheduler.add_system(ResourceUsingSystem); // Use updated name
+     if success {
+        info!("Successfully added ResourceUsingSystem");
+    } else {
+        warn!("ResourceUsingSystem has conflicts with existing systems, adding anyway");
+        scheduler.add_system_unchecked(ResourceUsingSystem); // Use updated name
+    }
+
     info!("Scheduler initialized with systems.");
 
     // 4. Initialize Transport
@@ -151,7 +171,7 @@ fn run_simulation() -> Result<(), RunnerError> {
         }
         prev_frame_time = frame_start_time;
 
-        // --- Run Systems ---
+        // --- Run Systems using the new scheduler ---
         scheduler.run(&mut world);
 
         // --- Transport Data ---
@@ -163,12 +183,11 @@ fn run_simulation() -> Result<(), RunnerError> {
             .send(&serialized_data)
             .map_err(RunnerError::RuntimeTransport)?;
 
-        // --- Frame Pacing ---
+        // --- Frame Pacing and logging (unchanged) ---
         let elapsed_time = frame_start_time.elapsed();
 
         if let Some(sleep_duration) = target_frame_duration.checked_sub(elapsed_time) {
             if !sleep_duration.is_zero() {
-                // Use spin_sleep for potentially more accurate short sleeps
                 spin_sleep::sleep(sleep_duration);
             }
         } else {
@@ -180,7 +199,6 @@ fn run_simulation() -> Result<(), RunnerError> {
 
         frame_count += 1;
 
-        // --- Logging & Exit Condition ---
         let now = Instant::now();
         if now.duration_since(last_log_time) >= Duration::from_secs(1) {
             let total_elapsed = simulation_start_time.elapsed().as_secs_f64();
@@ -192,15 +210,10 @@ fn run_simulation() -> Result<(), RunnerError> {
             last_log_time = now;
         }
 
-        // Convert max_frames to u64 for comparison
         if frame_count >= max_frames as u64 {
             info!("Reached max frames ({}), stopping simulation.", max_frames);
             break;
         }
-
-        // Add a small yield to prevent pegging CPU if loop is too fast,
-        // though spin_sleep should handle most cases.
-        // thread::yield_now();
     }
 
     Ok(())

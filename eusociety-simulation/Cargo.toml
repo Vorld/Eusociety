@@ -8,5 +8,6 @@ license.workspace = true
 
 [dependencies]
 eusociety-core = { path = "../eusociety-core" }
+eusociety-macros = { path = "../eusociety-macros" } # Added dependency
 rand.workspace = true
 log.workspace = true

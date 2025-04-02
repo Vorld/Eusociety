@@ -3,9 +3,17 @@ use std::collections::HashMap;
 use std::any::{TypeId, Any};
 use std::time::Duration;
 pub use eusociety_macros::Component;
+pub use eusociety_macros::system;
 
 // Basic Entity ID
 pub type Entity = u32;
+
+// Include the new ECS module
+pub mod ecs;
+pub mod resources;
+pub use ecs::system::{System, SystemAccess, DataAccess, AccessType};
+pub use ecs::scheduler::{SystemRegistry, SystemScheduler};
+pub use resources::{Res, ResMut, ResourceParam, SystemParam, Resource};
 
 // Component trait definition
 pub trait Component: 'static + Send + Sync {
@@ -164,22 +172,6 @@ impl ComponentStorage {
     }
 }
 
-/// Marker trait for types that can be stored as global resources in the World.
-/// 
-/// Resources represent global shared state that can be accessed by systems,
-/// as opposed to components which are associated with specific entities.
-/// Only one instance of a resource type can exist in the World at any time.
-/// 
-/// # Examples of appropriate resources:
-/// - Game time / delta time
-/// - Physics constants
-/// - Global game state
-/// - Asset managers
-/// 
-/// Resources must be `Send + Sync` to ensure thread-safety for future
-/// parallel system execution.
-pub trait Resource: 'static + Send + Sync {}
-
 /// A resource that tracks the time elapsed between frames
 #[derive(Debug, Clone, Copy)]
 pub struct DeltaTime {
@@ -317,13 +309,13 @@ impl World {
     }
 }
 
-// System function signature for Milestone 1 - keep for compatibility
-pub type System = fn(&mut World);
+// Legacy system function type for backward compatibility
+pub type LegacySystem = fn(&mut World);
 
-// Basic Scheduler for Milestone 1 - keep for compatibility
+// Legacy Scheduler for backward compatibility
 #[derive(Default)]
 pub struct Scheduler {
-    systems: Vec<System>,
+    systems: Vec<LegacySystem>,
 }
 
 impl Scheduler {
@@ -331,7 +323,7 @@ impl Scheduler {
         Scheduler::default()
     }
 
-    pub fn add_system(&mut self, system: System) {
+    pub fn add_system(&mut self, system: LegacySystem) {
         self.systems.push(system);
     }
 
@@ -342,7 +334,6 @@ impl Scheduler {
         }
     }
 }
-
 
 // Add basic tests
 #[cfg(test)]
@@ -436,5 +427,91 @@ mod tests {
         world.insert_resource(dt);
         assert!(world.has_resource::<DeltaTime>());
         assert_eq!(world.get_resource::<DeltaTime>().unwrap().delta_seconds, 0.016);
+    }
+    
+    #[test]
+    fn test_system_trait() {
+        use crate::ecs::system::{System, SystemAccess, AccessType};
+        
+        // Define a simple test system
+        struct TestSystem;
+        
+        impl System for TestSystem {
+            fn access(&self) -> SystemAccess {
+                SystemAccess::new()
+                    .with_component(TypeId::of::<Position>(), AccessType::Write)
+            }
+            
+            fn run(&mut self, world: &mut World) {
+                for (_, pos) in world.components.query_mut::<Position>() {
+                    pos.x += 5.0;
+                }
+            }
+        }
+        
+        let mut world = World::new();
+        let entity = world.create_entity();
+        world.add_component(entity, Position { x: 10.0, y: 20.0 });
+        
+        // Run the system
+        let mut system = TestSystem;
+        system.run(&mut world);
+        
+        // Check the result
+        assert_eq!(world.get_component::<Position>(entity).unwrap().x, 15.0);
+    }
+    
+    #[test]
+    fn test_system_scheduler() {
+        use crate::ecs::scheduler::SystemScheduler;
+        use crate::ecs::system::{System, SystemAccess, AccessType};
+        
+        // Define two systems - one that adds 1 to x, one that adds 2 to y
+        struct XSystem;
+        struct YSystem;
+        
+        impl System for XSystem {
+            fn access(&self) -> SystemAccess {
+                SystemAccess::new()
+                    .with_component(TypeId::of::<Position>(), AccessType::Write)
+            }
+            
+            fn run(&mut self, world: &mut World) {
+                for (_, pos) in world.components.query_mut::<Position>() {
+                    pos.x += 1.0;
+                }
+            }
+        }
+        
+        impl System for YSystem {
+            fn access(&self) -> SystemAccess {
+                SystemAccess::new()
+                    .with_component(TypeId::of::<Position>(), AccessType::Write)
+            }
+            
+            fn run(&mut self, world: &mut World) {
+                for (_, pos) in world.components.query_mut::<Position>() {
+                    pos.y += 2.0;
+                }
+            }
+        }
+        
+        let mut world = World::new();
+        let entity = world.create_entity();
+        world.add_component(entity, Position { x: 0.0, y: 0.0 });
+        
+        let mut scheduler = SystemScheduler::new();
+        scheduler.add_system(XSystem);
+        
+        // This should conflict, but we'll add it unchecked for the test
+        scheduler.add_system_unchecked(YSystem);
+        
+        // Run the scheduler
+        scheduler.run(&mut world);
+        
+        // Check the result - both systems should have run
+        let pos = world.get_component::<Position>(entity).unwrap();
+        assert_eq!(pos.x, 1.0);
+        assert_eq!(pos.y, 2.0);
     }
 }
