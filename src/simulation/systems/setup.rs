@@ -1,5 +1,6 @@
 use bevy_ecs::prelude::*;
 use rand::random;
+use tracing::info;
 use crate::simulation::components::{Position, Velocity, ParticleId};
 use crate::simulation::resources::SimulationConfigResource;
 
@@ -10,9 +11,9 @@ pub fn spawn_particles(
 ) {
     let (width, height) = simulation_config.0.world_dimensions;
     let max_vel = simulation_config.0.max_initial_velocity;
-    
-    println!("Spawning {} particles...", simulation_config.0.particle_count);
-    
+
+    info!("Spawning {} particles...", simulation_config.0.particle_count);
+
     for i in 0..simulation_config.0.particle_count {
         commands.spawn((
             ParticleId(i),
@@ -26,6 +27,6 @@ pub fn spawn_particles(
             },
         ));
     }
-    
-    println!("Particles spawned successfully");
+
+    info!("Particles spawned successfully");
 }

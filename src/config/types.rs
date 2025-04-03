@@ -22,8 +22,12 @@ pub struct SimulationConfig {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransportConfig {
     pub serializer_type: SerializerType,
+    pub sender_type: SenderType,
     pub output_path: String,
     pub output_frequency: u32,
+    pub websocket_address: Option<String>,
+    pub delta_compression: Option<bool>,
+    pub update_frequency: Option<u32>,
 }
 
 /// Defines behavior when particles reach world boundaries
@@ -38,4 +42,11 @@ pub enum BoundaryBehavior {
 pub enum SerializerType {
     Json,
     Binary,
+}
+
+/// Available sender types
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum SenderType {
+    File,
+    WebSocket,
 }

@@ -5,121 +5,53 @@ const fpsSpan = document.getElementById('fps');
 const walkerCountSpan = document.getElementById('walkerCount');
 
 // --- Shaders ---
-const vertexShaderSource = `#version 300 es
-    in vec2 a_position; // World coordinates
+const vertexShaderSource = `
+    attribute vec2 a_position;
 
-    uniform vec2 u_resolution; // Canvas resolution (pixels)
-    uniform vec2 u_viewport_center; // World coordinates at the center of the viewport
+    uniform vec2 u_resolution; // Canvas resolution
+    uniform vec2 u_viewport_origin; // World coordinates at top-left of viewport
     uniform float u_zoom; // Zoom level
     uniform float u_point_size;
 
     void main() {
-        // Calculate visible world dimensions based on canvas size and zoom
-        float visibleWorldWidth = u_resolution.x / u_zoom;
-        float visibleWorldHeight = u_resolution.y / u_zoom;
+        // Calculate position relative to the viewport origin, scaled by zoom
+        vec2 scaled_pos = (a_position - u_viewport_origin) * u_zoom;
 
-        // Calculate position relative to the viewport center
-        vec2 relativePos = a_position - u_viewport_center;
+        // Convert to clip space
+        vec2 zeroToOne = scaled_pos / u_resolution;
+        vec2 zeroToTwo = zeroToOne * 2.0;
+        vec2 clipSpace = zeroToTwo - 1.0;
 
-        // Normalize the relative position to the range [-1, 1]
-        // Divide by half the visible world dimensions
-        vec2 normalizedPos = vec2(
-            relativePos.x / (visibleWorldWidth / 2.0),
-            relativePos.y / (visibleWorldHeight / 2.0)
-        );
-
-        // Assign to gl_Position, flipping Y
-        gl_Position = vec4(normalizedPos.x, -normalizedPos.y, 0.0, 1.0);
-
-        // Scale point size by zoom level
+        gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1); // Flip Y
+        // Scale point size by zoom level. u_point_size now acts as a base size at zoom=1.0
         gl_PointSize = u_point_size * u_zoom;
     }
 `;
 
-const fragmentShaderSource = `#version 300 es
+const fragmentShaderSource = `
     precision mediump float;
     uniform vec4 u_color;
 
-    out vec4 outColor; // Output variable for fragment color
-
     void main() {
-        // Circular points
-        vec2 coord = gl_PointCoord - vec2(0.5); // Center the coordinate system
-        float r = length(coord); // Distance from center
-        // Use smoothstep for anti-aliasing the edge
-        float alpha = 1.0 - smoothstep(0.45, 0.5, r);
-        if (alpha <= 0.0) {
-             discard; // Discard pixels outside the circle
-        }
-        outColor = vec4(u_color.rgb, u_color.a * alpha);
+        // Simple square points for now
+        gl_FragColor = u_color;
+
+        /* // Optional: Circular points like oldproject.js
+        vec2 coord = gl_PointCoord - vec2(0.5);
+        float r = length(coord);
+        float alpha = 1.0 - smoothstep(0.45, 0.5, r); // Adjust smoothing as needed
+        gl_FragColor = vec4(u_color.rgb, u_color.a * alpha);
+        */
     }
 `;
-
-// --- Binary Parser ---
-class BinaryParticleParser {
-    constructor() {
-        // Cache DataViews for better performance with large numbers of particles
-        this.cachedViews = new Map();
-    }
-
-    parse(buffer) {
-        const view = new DataView(buffer);
-        let offset = 0;
-
-        // Read frame number (u64)
-        const frameLow = view.getUint32(offset, true); offset += 4;
-        const frameHigh = view.getUint32(offset, true); offset += 4;
-
-        // Read timestamp (f64)
-        const timestamp = view.getFloat64(offset, true); offset += 8;
-
-        // Read particle count (u64, but we only need the lower 32 bits for JS)
-        // bincode serializes Vec length as u64 by default.
-        const particleCountLow = view.getUint32(offset, true); offset += 4;
-        const particleCountHigh = view.getUint32(offset, true); offset += 4; // Advance offset by 8 bytes total
-        const particleCount = particleCountLow; // Use lower 32 bits
-
-        // Read particles
-        const particles = [];
-        for (let i = 0; i < particleCount; i++) {
-            // Read particle ID (usize/u32)
-            const id = view.getUint32(offset, true); offset += 4;
-
-            // Read x position (f32)
-            const x = view.getFloat32(offset, true); offset += 4;
-            // Read y position (f32)
-            const y = view.getFloat32(offset, true); offset += 4;
-
-            // Add NaN check for debugging
-            if (isNaN(x) || isNaN(y)) {
-                console.warn(`Parsed NaN position for particle ID ${id}: (${x}, ${y})`);
-                // Skip adding this particle if its position is invalid
-                continue;
-            }
-
-            particles.push({ id, x, y });
-        }
-
-        return {
-            frame: frameLow, // We only use the low part since JS numbers are 53-bit safe
-            timestamp,
-            entities: particles
-        };
-    }
-}
 
 // --- WebGL Renderer Class ---
 class EusocietyWebGLRenderer {
     constructor(canvasId) {
         this.canvas = document.getElementById(canvasId);
-        this.gl = this.canvas.getContext('webgl2'); // Use WebGL 2.0 as requested
+        this.gl = this.canvas.getContext('webgl'); // Use WebGL1 for simplicity, matches oldproject
         if (!this.gl) {
-            // Fallback or error if WebGL2 is not supported
-            console.warn("WebGL 2.0 not supported, falling back to WebGL 1.0");
-            this.gl = this.canvas.getContext('webgl');
-            if (!this.gl) {
-                throw new Error('WebGL (1.0 or 2.0) not supported');
-            }
+            throw new Error('WebGL not supported');
         }
 
         // View State
@@ -130,8 +62,8 @@ class EusocietyWebGLRenderer {
             viewportY: 500.0, // World coord at center Y
             targetViewportX: 500.0,
             targetViewportY: 500.0,
-            zoom: 1, 
-            targetZoom: 1, 
+            zoom: 1.0, // 1.0 = world size matches canvas size initially (approx)
+            targetZoom: 1.0,
             isDragging: false,
             lastX: 0,
             lastY: 0,
@@ -163,16 +95,10 @@ class EusocietyWebGLRenderer {
         // Locations
         this.positionLocation = gl.getAttribLocation(this.program, 'a_position');
         this.resolutionLocation = gl.getUniformLocation(this.program, 'u_resolution');
-        this.viewportCenterLocation = gl.getUniformLocation(this.program, 'u_viewport_center'); // Changed from viewportOrigin
+        this.viewportOriginLocation = gl.getUniformLocation(this.program, 'u_viewport_origin');
         this.zoomLocation = gl.getUniformLocation(this.program, 'u_zoom');
         this.pointSizeLocation = gl.getUniformLocation(this.program, 'u_point_size');
         this.colorLocation = gl.getUniformLocation(this.program, 'u_color');
-
-        // Check if locations are valid
-        if (this.positionLocation === -1 || !this.resolutionLocation || !this.viewportCenterLocation || !this.zoomLocation || !this.pointSizeLocation || !this.colorLocation) {
-             console.error("Failed to get one or more shader locations!");
-             // Optionally throw an error or handle appropriately
-        }
 
         // Buffer
         this.walkerBuffer = gl.createBuffer();
@@ -279,12 +205,10 @@ class EusocietyWebGLRenderer {
 
         // Update GPU buffer
         const positions = new Float32Array(this.walkers.length * 2);
-        // Fill positions without logging
         for (let i = 0; i < this.walkers.length; i++) {
             positions[i * 2] = this.walkers[i].x;
             positions[i * 2 + 1] = this.walkers[i].y;
         }
-
         const gl = this.gl;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
@@ -307,27 +231,28 @@ class EusocietyWebGLRenderer {
         }
 
         // --- View Interpolation ---
-        // Reintroduce lerping for smoother panning
         this.view.viewportX += (this.view.targetViewportX - this.view.viewportX) * this.view.lerpFactor;
         this.view.viewportY += (this.view.targetViewportY - this.view.viewportY) * this.view.lerpFactor;
-        // Keep lerping for zoom
         this.view.zoom += (this.view.targetZoom - this.view.zoom) * this.view.lerpFactor;
 
         // --- Drawing ---
         this.resize(); // Che
         // ck resize
-        gl.clearColor(1.0, 1.0, 1.0, 1.0); // White background
+        gl.clearColor(0,0,0,0); // Dark background
         gl.clear(gl.COLOR_BUFFER_BIT);
+
+        // Calculate viewport origin (top-left corner in world coords)
+        const viewportWorldWidth = gl.canvas.width / this.view.zoom;
+        const viewportWorldHeight = gl.canvas.height / this.view.zoom;
+        const viewportOriginX = this.view.viewportX - viewportWorldWidth / 2;
+        const viewportOriginY = this.view.viewportY - viewportWorldHeight / 2;
 
         // Set uniforms
         gl.uniform2f(this.resolutionLocation, gl.canvas.width, gl.canvas.height);
-        gl.uniform2f(this.viewportCenterLocation, this.view.viewportX, this.view.viewportY); // Pass center directly
+        gl.uniform2f(this.viewportOriginLocation, viewportOriginX, viewportOriginY);
         gl.uniform1f(this.zoomLocation, this.view.zoom);
         gl.uniform1f(this.pointSizeLocation, 2.0); // Base walker size (pixels at zoom=1.0)
-        gl.uniform4f(this.colorLocation, 0.0, 0.0, 0.0, 1.0); // Black particles
-
-        // Log uniforms just before drawing - Removed for clarity
-        // console.log(`Render uniforms: Res=(${gl.canvas.width}, ${gl.canvas.height}), Center=(${this.view.viewportX.toFixed(2)}, ${this.view.viewportY.toFixed(2)}), Zoom=${this.view.zoom.toFixed(2)}`);
+        gl.uniform4f(this.colorLocation, 0.0, 0.0, 0.0, 1.0); // Black
 
         // Draw walkers
         const walkerCount = this.walkers.length;
@@ -351,7 +276,6 @@ class EusocietyWebGLRenderer {
 // --- Main Execution ---
 try {
     const renderer = new EusocietyWebGLRenderer('glCanvas');
-    const binaryParser = new BinaryParticleParser();
 
     // --- WebSocket ---
     const socketUrl = 'ws://127.0.0.1:8080';
@@ -360,9 +284,6 @@ try {
     function connectWebSocket() {
         statusSpan.textContent = 'Connecting...';
         socket = new WebSocket(socketUrl);
-        
-        // Set binary type to arraybuffer
-        socket.binaryType = 'arraybuffer';
 
         socket.onopen = () => {
             console.log('WebSocket connection established.');
@@ -371,30 +292,17 @@ try {
 
         socket.onmessage = (event) => {
             try {
-                let worldState;
-                
-                // Process binary data or JSON
-                if (event.data instanceof ArrayBuffer) {
-                    // Binary data
-                    worldState = binaryParser.parse(event.data);
-                } else {
-                    // JSON data (fallback)
-                    worldState = JSON.parse(event.data);
-                }
-                
-                if (worldState && Array.isArray(worldState.entities)) {
+                // console.log('Raw WebSocket data:', event.data);
+                const worldState = JSON.parse(event.data);
+                if (typeof worldState === 'object' && worldState !== null && Array.isArray(worldState.entities)) {
                     // Pass only position data to renderer
                     const walkerPositions = worldState.entities.map(e => ({ x: e.x, y: e.y }));
                     renderer.updateWalkers(walkerPositions);
-                    
-                    // Optionally show received data count in console
-                    // console.log(`Received ${worldState.entities.length} particles, frame: ${worldState.frame}`);
                 } else {
                     console.warn('Received unexpected data format:', worldState);
                 }
             } catch (e) {
-                console.error('Failed to process WebSocket message:', e);
-                console.error('Error details:', e.message);
+                console.error('Failed to parse WebSocket message:', e);
             }
         };
 

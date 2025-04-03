@@ -20,3 +20,13 @@ rand = "0.8"
 
 # Entity Component System
 bevy_ecs = "0.15.3"
+
+# WebSocket support
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread", "net", "time", "sync"] }
+tokio-tungstenite = "0.20"
+futures-util = "0.3"
+futures = "0.3"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

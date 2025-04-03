@@ -4,14 +4,19 @@ pub mod systems;
 
 use std::time::{Duration, Instant};
 use std::thread::sleep;
+use tracing::{info, error, debug, trace, warn}; // Added tracing import
 
 use bevy_ecs::prelude::*;
 use rand;
 
 use crate::config::Config;
-use crate::transport::{TransportController, SimulationState, ParticleState};
+use crate::transport::TransportController; // Removed unused SimulationState, ParticleState
 use self::resources::{Time, FrameCounter, SimulationConfigResource, TransportConfigResource};
-use self::systems::{spawn_particles, move_particles, randomize_velocities, handle_boundaries};
+use self::systems::{
+    // Removed unused spawn_particles
+    move_particles, randomize_velocities, handle_boundaries, 
+    extract_and_send, flush_transport, SimulationTimer, SimulationTransport
+};
 
 /// The main simulation application
 pub struct SimulationApp {
@@ -34,22 +39,39 @@ impl SimulationApp {
         // Add simulation resources
         world.insert_resource(Time::default());
         world.insert_resource(FrameCounter::default());
+        world.insert_resource(SimulationTimer::default());
         
         // Create schedule with systems
         let mut schedule = Schedule::default();
         
-        // Add systems to schedule
-        schedule.add_systems((
-            move_particles,
-            randomize_velocities,
-            handle_boundaries,
-        ));
-        
-        // Create transport controller if needed
+        // Create transport controller
         let transport = match TransportController::from_config(&config.transport) {
-            Ok(controller) => Some(controller),
+            Ok(controller) => {
+                // Add transport resource to world if created successfully
+                let transport_controller = controller.clone();
+                world.insert_resource(SimulationTransport { controller: transport_controller });
+                
+                // Add transport systems to schedule
+                schedule.add_systems((
+                    move_particles,
+                    randomize_velocities,
+                    handle_boundaries,
+                    extract_and_send,
+                    flush_transport.after(extract_and_send),
+                ));
+                
+                Some(controller)
+            },
             Err(err) => {
-                eprintln!("Failed to create transport controller: {}", err);
+                error!("Failed to create transport controller: {}", err);
+
+                // Add standard systems without transport
+                schedule.add_systems((
+                    move_particles,
+                    randomize_velocities,
+                    handle_boundaries,
+                ));
+                
                 None
             }
         };
@@ -65,12 +87,11 @@ impl SimulationApp {
             running: false,
             config,
         };
-        
         // Manually spawn particles before returning
-        println!("Initializing simulation with {} particles...", particle_count);
+        info!("Initializing simulation with {} particles...", particle_count);
         app.spawn_initial_particles();
-        println!("Initialization complete.");
-        
+        info!("Initialization complete.");
+
         app
     }
     
@@ -103,7 +124,9 @@ impl SimulationApp {
         let mut last_time = Instant::now();
         let frame_duration = Duration::from_secs_f64(1.0 / self.config.simulation.frame_rate as f64);
         let mut frame_counter = 0;
-        let output_frequency = self.config.transport.output_frequency as u64;
+        
+        // The new transport system handles sending data via the extract_and_send system,
+        // so we don't need the manual collection logic anymore.
         
         while self.running {
             // Calculate delta time
@@ -126,61 +149,46 @@ impl SimulationApp {
                 frame_count.timestamp = elapsed_seconds;
             }
             
-            // We don't need RunState anymore since we're spawning particles manually
-            
-            // Run systems
+            // Run systems (including transport systems if configured)
             self.schedule.run(&mut self.world);
             
-            // Send state to transport layer if configured and frame matches output frequency
+            // Increment frame counter for debugging
             frame_counter += 1;
             
             // Add debug output every 100 frames
             if frame_counter % 100 == 0 {
-                println!("Simulation frame: {}, timestamp: {:.2}s", frame_counter, elapsed_seconds);
-                // Print a sample of particle positions
+                debug!(frame = frame_counter, timestamp = elapsed_seconds, "Simulation frame update");
+                // Trace a sample of particle positions (lower level detail)
                 let mut count = 0;
                 for (id, pos) in self.world.query::<(&components::ParticleId, &components::Position)>().iter(&self.world).take(5) {
-                    println!("  Particle {}: position ({:.2}, {:.2})", id.0, pos.x, pos.y);
+                    trace!(particle_id = id.0, x = pos.x, y = pos.y, "Particle position sample");
                     count += 1;
                 }
-                println!("  ... and {} more particles", self.world.query::<&components::ParticleId>().iter(&self.world).count() - count);
-            }
-            
-            // Collect state data if needed for transport (before borrowing transport)
-            let state_data = if frame_counter % output_frequency == 0 && self.transport.is_some() {
-                // Get frame info
-                let frame_count = self.world.resource::<FrameCounter>().count;
-                let timestamp = self.world.resource::<FrameCounter>().timestamp;
-                
-                // Collect particle data
-                let mut particles = Vec::new();
-                for (id, pos) in self.world.query::<(&components::ParticleId, &components::Position)>().iter(&self.world) {
-                    particles.push(ParticleState {
-                        id: id.0,
-                        position: [pos.x, pos.y],
-                    });
+                let total_particles = self.world.query::<&components::ParticleId>().iter(&self.world).count();
+                if total_particles > count {
+                    trace!(remaining = total_particles - count, "More particles exist");
                 }
-                
-                Some(SimulationState {
-                    frame: frame_count,
-                    timestamp,
-                    particles,
-                })
-            } else {
-                None
-            };
-            
-            // Send state if we collected it
-            if let Some(state) = state_data {
-                if let Some(ref transport) = self.transport {
-                    if let Err(err) = transport.send_state(&state) {
-                        eprintln!("Failed to send state: {}", err);
+
+                // Debug connected WebSocket clients if using WebSocket transport
+                if let Some(transport) = &self.world.get_resource::<SimulationTransport>() {
+                    if let Some(ws_sender) = transport.controller.get_websocket_sender() {
+                        debug!(clients = ws_sender.client_count(), "WebSocket clients connected");
                     }
                 }
             }
-            
-            // Sleep to maintain frame rate
+
+            // Check for frame lag before sleeping
             let elapsed = now.elapsed();
+            if elapsed > frame_duration {
+                warn!(
+                    target_duration_ms = frame_duration.as_millis(),
+                    actual_duration_ms = elapsed.as_millis(),
+                    lag_ms = (elapsed - frame_duration).as_millis(),
+                    "Frame lag detected!"
+                );
+            }
+
+            // Sleep to maintain frame rate (if needed)
             if elapsed < frame_duration {
                 sleep(frame_duration - elapsed);
             }

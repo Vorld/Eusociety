@@ -2,7 +2,7 @@ use std::fs;
 use thiserror::Error;
 
 // Re-export types
-pub use self::types::{Config, SimulationConfig, TransportConfig, BoundaryBehavior, SerializerType};
+pub use self::types::{Config, SimulationConfig, TransportConfig, BoundaryBehavior, SerializerType, SenderType};
 mod types;
 
 // Config error handling
