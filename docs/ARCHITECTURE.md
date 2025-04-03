@@ -1,79 +1,91 @@
-# Eusociety Architecture Document
+# Eusociety Architecture Document (Bevy ECS Branch)
 
-## Project Vision
+## 1. Overview
 
-Eusociety is a high-performance, modular simulation engine built in Rust. The primary design goal is **runtime efficiency**, prioritizing the speed of the simulation loop above startup time. The engine aims to simulate large numbers of entities efficiently, leveraging an Entity-Component-System (ECS) architecture with compile-time optimizations. Runtime flexibility is provided for initial state configuration, transport layer selection, and simulation parameters via a configuration file.
+**Goal:** Create a simulation engine that:
 
-## Core Principles
+*   Leverages Bevy ECS for its core simulation state management.
+*   Has a pluggable module for serialization (JSON, binary, etc.) and transport (stdio, file, websocket, etc.) to output the ECS state.
+*   Uses a JSON-based configuration to set simulation parameters (e.g., framerate, world size, transport settings, initial state).
 
-*   **Performance:** Maximize simulation loop speed through compile-time ECS registration, efficient data storage (target: contiguous/sparse sets), and potential parallelism.
-*   **Modularity:** Separate concerns into distinct crates (`core`, `simulation`, `config`, `transport`, `runner`, `macros`) for maintainability and testability.
-*   **Extensibility:** Allow users to define custom components and systems easily (target: procedural macros like `#[derive(Component)]`, `#[system]`, defined in `eusociety-macros`).
-*   **Configurability:** Enable runtime setup of initial state, transport mechanisms (serialization format, output method), and simulation settings (FPS, threading) via a configuration file (e.g., JSON).
+**Key Design Principles:**
 
-## Crate Structure
+*   **Separation of Concerns:** Each major function (simulation, configuration, serialization, transport) is encapsulated in its own module.
+*   **Extensibility:** Use traits and interfaces so that new serializers or transport mechanisms can be added without modifying core logic.
+*   **Configurability:** Use a JSON config file parsed via serde to allow easy tweaking of simulation parameters and output settings.
+*   **Performance:** While leveraging Bevy ECS, aim for efficient state extraction and non-blocking transport where possible.
 
-1.  **`eusociety-core`**
-    *   **Purpose:** The heart of the engine. Manages the ECS (Entities, Components, Systems), World state, and the Scheduler.
-    *   **Key Features (Target):**
-        *   **Entities:** Lightweight IDs (e.g., `u32`).
-        *   **Components:** Plain data structs implementing the `Component` trait, typically via `#[derive(Component)]` (macro provided by `eusociety-macros`). Stored efficiently using `Vec<Option<T>>` per component type.
-        *   **Systems:** Logic units operating on components and resources. Definition and dependency declaration are evolving (target: `#[system]` macro or `System` trait implementation).
-        *   **World:** Holds component storage (`Vec<Option<T>>` based) and global resources (e.g., `DeltaTime`). Provides accessors for components and resources.
-        *   **Scheduler:** Manages system execution order. Currently sequential, but designed to eventually leverage dependency information for parallelism (target: `rayon`).
-    *   **Milestone 2.2 State:** Uses `Vec<Option<T>>` for component storage, includes resource management. System definition uses `fn` pointers, but is targeted for refactoring in M2.3. Scheduler remains sequential.
+## 2. Architecture Components
 
-2.  **`eusociety-simulation`** (Optional Crate)
-    *   **Purpose:** Provides a library of common, reusable components and systems (e.g., `Position`, `Velocity`, `RandomMovementSystem`).
-    *   **Details:** Users can opt-in to use this crate or define everything themselves. Depends on `eusociety-core`.
+### A. Configuration Module
 
-3.  **`eusociety-transport`**
-    *   **Purpose:** Handles serialization and transmission of simulation data to external consumers (e.g., visualizers, RL agents).
-    *   **Key Features:**
-        *   `Serializer` trait: Defines how to convert world state (or parts) into bytes (Implementations: `BinarySerializer`, `JsonSerializer`).
-        *   `Sender` trait: Defines how to transmit serialized bytes (Implementations: `FileSender`, `ConsoleSender`; Target: `WebSocketSender`).
-        *   Runtime selection via config using `Box<dyn Trait>`. Factory functions (`create_serializer`, `create_sender`) facilitate this.
+*   **Purpose:** Load and parse a JSON configuration file.
+*   **Responsibilities:**
+    *   Parse simulation parameters such as expected framerate, world size, initial simulation state.
+    *   Read transport configuration (which serializer and sender to use, along with their settings).
+*   **Implementation Considerations:**
+    *   Use `serde` for JSON deserialization.
+    *   Define a configuration struct that mirrors the expected JSON schema.
+    *   Provide functions to load and parse the JSON file, handling errors appropriately.
 
-4.  **`eusociety-config`**
-    *   **Purpose:** Parses the runtime configuration file.
-    *   **Key Features:**
-        *   Defines Rust structs (`Config`, `TransportConfig`, etc.) mirroring the JSON structure using `serde`.
-        *   Loads and validates the configuration file (`config.json`).
-        *   Provides typed configuration data to other crates.
-        *   Handles basic error reporting for invalid formats or values.
+### B. ECS Simulation Module
 
-5.  **`eusociety-macros`** (Procedural Macro Crate)
-    *   **Purpose:** Defines the procedural macros (`#[derive(Component)]`, target: `#[system]`) used for compile-time code generation and integration with the ECS.
-    *   **Details:** Has `proc-macro = true` set. `#[derive(Component)]` is implemented. `#[system]` is planned for M2.3. Depended upon by `eusociety-core` and user crates defining components/systems.
+*   **Purpose:** Encapsulate the simulation logic and state management using Bevy ECS.
+*   **Responsibilities:**
+    *   Define Bevy components, resources, and systems representing the simulation.
+    *   Implement a main simulation loop that ticks the Bevy ECS `App` or `World` at the configured framerate.
+*   **Implementation Considerations:**
+    *   Keep simulation logic independent of the output mechanism.
+    *   Leverage Bevy's scheduling and parallelism features.
+    *   Optionally design systems to modify the simulation state based on external events (if needed).
 
-6.  **`eusociety-runner`**
-    *   **Purpose:** The main executable crate. Initializes the engine and runs the simulation loop.
-    *   **Key Features:**
-        *   Orchestrates initialization: Loads config, creates World, Scheduler, Serializer, Sender.
-        *   Populates the initial World state based on `config.start_state`.
-        *   Registers systems with the Scheduler.
-        *   Runs the main loop: calculates delta time (future), runs the scheduler, triggers serialization and sending via the transport layer, implements frame pacing (`spin_sleep`).
+### C. Transport Module (Serialization & Sender)
 
-## Data Flow & Execution
+*   **Purpose:** Handle the serialization of ECS state and its transmission via various channels.
+*   **Responsibilities:**
+    *   **Serializer Interface:** Define a trait (e.g., `Serializer`) with methods like `serialize(&self, world: &bevy::prelude::World) -> Result<Vec<u8>, SerializationError>`. Provide implementations for JSON (`serde_json`) and binary formats (e.g., `bincode`).
+    *   **Sender Interface:** Define a trait (e.g., `Sender`) with methods such as `send(&self, data: &[u8]) -> Result<(), TransportError>`. Implement different senders: `StdioSender`, `FileSender`, `WebSocketSender`, etc.
+    *   **Transport Controller:** Combine a chosen serializer and sender (determined by configuration) into a single unit responsible for extracting state, serializing it, and sending it.
+*   **Implementation Considerations:**
+    *   Use the configuration module to determine which implementations to instantiate.
+    *   Design with the Strategy pattern (using `Box<dyn Trait>`) to allow dynamic selection of serializer and sender at runtime.
+
+### D. Integration Layer
+
+*   **Purpose:** Integrate the Bevy ECS simulation loop with the transport mechanism.
+*   **Responsibilities:**
+    *   Within a Bevy system or stage, extract the current ECS state (potentially querying specific components/resources).
+    *   Pass the relevant state to the `TransportController` to serialize and send the data at configurable intervals (e.g., every frame, every N frames).
+*   **Implementation Considerations:**
+    *   Ensure that the ECS state extraction is efficient. Consider how to best query the `World`.
+    *   Handle asynchronous sending if required (especially for websocket or file I/O) without blocking the simulation loop (e.g., using `tokio` or `async-std` integrated with Bevy).
+
+## 3. Data Flow & Execution
 
 1.  **Startup:**
-    *   `eusociety-runner` starts.
-    *   `eusociety-config` loads `config.json`.
-    *   `eusociety-runner` initializes `eusociety-core::World` based on `start_state`, including initial components and resources (like `DeltaTime`).
-    *   `eusociety-runner` initializes `eusociety-core::Scheduler` and registers systems (currently hardcoded `random_movement_system` using `fn` pointers).
-    *   `eusociety-runner` initializes `eusociety-transport::{Serializer, Sender}` based on config using factory functions.
-2.  **Runtime Loop:**
-    *   Calculate and update frame delta time resource in the `World`.
-    *   `Scheduler::run()` executes registered systems (sequentially in M1, potentially parallel later) modifying the `World` state.
-    *   `Serializer::serialize()` converts relevant `World` data to bytes.
-    *   `Sender::send()` transmits the byte data.
-    *   Frame pacing logic ensures the loop runs close to the target FPS.
-    *   Loop continues until an exit condition (e.g., max frames, external signal).
+    *   The main runner executable starts.
+    *   The `Configuration Module` loads and parses `config.json`.
+    *   A Bevy `App` is initialized.
+    *   Initial simulation state (entities, components, resources) is set up in the Bevy `World` based on the configuration.
+    *   Simulation systems are added to the Bevy schedule.
+    *   The `Transport Module` initializes the configured `Serializer` and `Sender` based on the config, likely creating a `TransportController`.
+    *   An integration system/stage is added to the Bevy schedule to handle state extraction and transport.
+2.  **Runtime Loop (Bevy App Run):**
+    *   Bevy's scheduler executes systems according to its schedule (potentially in parallel).
+    *   Simulation systems update the `World` state (components, resources).
+    *   The integration system runs:
+        *   It queries the `World` to extract the necessary state snapshot.
+        *   It passes the snapshot to the `TransportController`.
+        *   The `TransportController` uses the `Serializer` to convert the state to bytes.
+        *   The `TransportController` uses the `Sender` to transmit the bytes (potentially asynchronously).
+    *   Bevy manages the loop timing based on its configuration (e.g., `WinitSettings::desktop_app()`).
+    *   The loop continues until Bevy's exit conditions are met.
 
-## Key Trade-offs & Future Goals
+## 4. Implementation Considerations and Decision Rationale
 
-*   **Compile-Time vs. Runtime:** Heavily favors compile-time optimization for the core ECS loop, sacrificing some runtime flexibility in component/system registration (addressed via planned macros).
-*   **ECS Implementation:** Milestone 2.2 uses optimized `Vec<Option<T>>` storage and includes resource management. System definition and a dependency-aware parallel scheduler using procedural macros are the next major steps (M2.3, M2.4).
-*   **Transport Flexibility:** Uses dynamic dispatch (`Box<dyn Trait>`) for transport, accepting minor overhead for flexibility.
-*   **Configuration:** Currently simple JSON. May support more complex scenarios (scripting, external data refs) later.
-*   **External API:** An explicit API for external interaction (e.g., RL agents) is a future goal.
+*   **Modularity:** By keeping the configuration, simulation (within Bevy), and transport modules separate, components can be evolved or swapped (e.g., adding a new transport mechanism) with minimal impact on the core simulation.
+*   **Abstraction via Traits:** Traits for `Serializer` and `Sender` enable using the Strategy pattern. The configuration dictates which implementations are used at runtime, decoupling instantiation from usage.
+*   **Leveraging Bevy:** Rely on Bevy ECS for efficient state management, scheduling, and potentially parallelism. Focus application logic on defining components and systems.
+*   **Ease of Extension:** New serialization formats or transport mechanisms can be added by implementing the corresponding traits and updating the configuration parsing/handling logic. **Future goals include potentially adding an external API for interaction (e.g., for RL agents) and exploring more advanced configuration options like scripting.**
+*   **Performance and Non-blocking Behavior:** The simulation relies on Bevy's performance. Transport operations, especially I/O-bound ones (file, network), should ideally be asynchronous to avoid blocking the main Bevy schedule. Bevy's task pools or integration with async runtimes can facilitate this.
+*   **Error Handling:** Each module should implement robust error handling (e.g., config parsing errors, serialization failures, transport connection issues) and provide clear logging.
