@@ -14,8 +14,8 @@
     ]
   },
   "transport": {
-    "serializer": {"type": "binary"},
-    "sender": {"type": "file", "options": {"path": "output.bin"}}
+    "serializer": {"type": "json"},
+    "sender": {"type": "file", "options": {"path": "output.json"}}
   },
   "simulation": {"threads": 1, "fps": 60}
 }
