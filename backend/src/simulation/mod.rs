@@ -1,42 +1,41 @@
 pub mod entity;
 pub mod engine;
-pub mod particle;
+pub mod field;
+pub mod transport;
+pub mod config;
+pub mod registry;
 
 use crate::simulation::engine::SimulationEngine;
-use crate::simulation::particle::Particle;
 use crate::simulation::entity::Entity;
+use crate::simulation::config::SimulationConfig;
+use crate::simulation::transport::{Transport, Serializer};
+use crate::simulation::transport::websocket::{WebSocketTransport, BinarySerializer};
 use tokio::sync::broadcast;
 use tokio::time::{Instant, Duration, interval};
-use rayon::prelude::*;
-use std::io::Write;
+use std::sync::Arc;
 
-// Increase broadcast rate to reduce network overhead
-const TICK_RATE: Duration = Duration::from_millis(10); // 10 FPS 
-const BROADCAST_RATE: u32 = 1; // Send every frame
-const INITIAL_PARTICLES: usize = 10000;
-const BUFFER_CAPACITY: usize = INITIAL_PARTICLES * 12;
-const BATCH_SIZE: usize = 4096;
-const MAX_CHUNK_SIZE: usize = 65536; // Define a maximum chunk size for compressed data
-
-pub async fn simulation_loop(tx: broadcast::Sender<Vec<u8>>) {
-    let mut engine = SimulationEngine::new(BATCH_SIZE);
-    let mut timer = interval(TICK_RATE);
-    let mut state_buf = Vec::with_capacity(BUFFER_CAPACITY);
+// Initialize the registry with default components
+pub fn initialize_registry() {
+    use crate::simulation::registry::REGISTRY;
+    use crate::simulation::entity::particle::ParticleFactory;
+    use crate::simulation::field::scalar_field::ScalarFieldFactory;
     
-    // Initialize particles in parallel
-    let particles = (0..INITIAL_PARTICLES)
-        .into_par_iter()
-        .map(|i| {
-            let cols = (INITIAL_PARTICLES as f32).sqrt() as usize;
-            let spacing = 6000.0 / cols as f32;
-            let x = (i % cols) as f32 * spacing;
-            let y = (i / cols) as f32 * spacing;
-            Box::new(Particle::new(i, x as f64, y as f64)) as Box<dyn Entity + Send + Sync>
-        })
-        .collect();
+    REGISTRY.register_entity_factory("particle", Box::new(ParticleFactory));
+    REGISTRY.register_field_factory("scalar", Box::new(ScalarFieldFactory));
+}
 
-    engine.entities = particles;
-
+pub async fn simulation_loop(tx: broadcast::Sender<Vec<u8>>, config: SimulationConfig) {
+    let mut engine = SimulationEngine::new(config.batch_size).with_config(config.clone());
+    let mut timer = interval(Duration::from_millis(config.tick_rate_ms));
+    let mut state_buf = Vec::with_capacity(10000 * 13); // Initial capacity
+    
+    // Initialize the engine with configured entities and fields
+    engine.initialize();
+    
+    // Create transport and serializer
+    let serializer = Box::new(BinarySerializer);
+    let transport = WebSocketTransport::new(tx.clone(), serializer, config.max_chunk_size);
+    
     let mut frame_count = 0;
     let mut last_time = Instant::now();
     
@@ -46,20 +45,19 @@ pub async fn simulation_loop(tx: broadcast::Sender<Vec<u8>>) {
         let dt = (now - last_time).as_secs_f32();
         last_time = now;
 
-        // Process physics in parallel chunks
+        // Update simulation
         engine.update(dt);
 
-        if frame_count % BROADCAST_RATE == 0 && tx.receiver_count() > 0 {
+        // Broadcast state if needed
+        if frame_count % config.broadcast_rate == 0 && tx.receiver_count() > 0 {
+            state_buf.clear();
             engine.serialize_state(&mut state_buf);
+            
             if !state_buf.is_empty() {
-            // Broadcast the state directly in chunks if needed
-            for chunk in state_buf.chunks(MAX_CHUNK_SIZE) {
-                if tx.send(chunk.to_vec()).is_err() {
-                break;
+                if let Err(e) = transport.send_state(&state_buf) {
+                    eprintln!("Error sending state: {}", e);
                 }
             }
-            }
-            state_buf.clear();
         }
         
         frame_count += 1;

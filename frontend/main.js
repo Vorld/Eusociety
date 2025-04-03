@@ -3,18 +3,22 @@
     const gl = canvas.getContext("webgl", { antialias: true });
     if (!gl) return alert("WebGL not supported");
   
+    let worldScale = 3000.0;  // This is your base scale factor
+    let zoomLevel = 1.0;
+
     // Vertex shader with fixed coordinate handling
     const vsSource = `
       attribute vec2 a_position;
       uniform vec2 u_resolution;
       uniform vec2 u_viewport;
+      uniform float u_zoomLevel;
       
       void main() {
         // Position relative to viewport center
         vec2 pos = a_position - u_viewport;
         
-        // Apply zoom level (smaller denominator = zoomed out view)
-        vec2 zoomedPos = pos / 3000.0; // Show more of the simulation
+        // Apply zoom level 
+        vec2 zoomedPos = pos / (3000.0 * u_zoomLevel);
         
         // Correct for aspect ratio
         float aspect = u_resolution.x / u_resolution.y;
@@ -24,7 +28,7 @@
         gl_Position = vec4(zoomedPos, 0, 1);
         
         // Adjust point size based on zoom level
-        gl_PointSize = 3.0;
+        gl_PointSize = max(2.0, 5.0 / u_zoomLevel);
       }
     `;
   
@@ -59,6 +63,7 @@
     let posLoc = gl.getAttribLocation(program, "a_position");
     let resLoc = gl.getUniformLocation(program, "u_resolution");
     let vpLoc  = gl.getUniformLocation(program, "u_viewport");
+    let zoomLoc = gl.getUniformLocation(program, "u_zoomLevel");
   
     // Use a single buffer reference, not two different ones
     const glBuffer = gl.createBuffer();
@@ -97,13 +102,12 @@
       const dx = e.clientX - lastX;
       const dy = e.clientY - lastY;
       
-      // Scale mouse movement by ratio of simulation space to screen space
-      const scaleX = 6000 / canvas.width;
-      const scaleY = 6000 / canvas.height;
+      // Scale by zoom level - when zoomed in (small zoom value), 
+      // panning should move a smaller distance in world space
+      const panScale = zoomLevel; 
       
-      targetX -= dx * scaleX;
-      // Reverse the Y direction by removing the negative sign 
-      targetY += dy * scaleY; // Changed from -= to +=
+      targetX -= dx * panScale * (worldScale / canvas.width);
+      targetY += dy * panScale * (worldScale / canvas.height);
       
       lastX = e.clientX;
       lastY = e.clientY;
@@ -142,6 +146,9 @@
       
       // Pass viewport center position
       gl.uniform2f(vpLoc, viewportX, viewportY);
+      
+      // Pass the zoom level to the shader
+      gl.uniform1f(zoomLoc, zoomLevel);
     
       // Draw the particles
       gl.drawArrays(gl.POINTS, 0, numParticles);
@@ -178,13 +185,14 @@
                     
                     // Create a view for the combined data
                     const view = new DataView(combined.buffer);
-                    numParticles = Math.floor(combined.length / 12);
+                    // Calculate the correct entity size - each entity has type(1) + id(4) + x(4) + y(4) = 13 bytes
+                    numParticles = Math.floor(combined.length / 13);
                     
                     const flat = new Float32Array(numParticles * 2);
                     for (let i = 0; i < numParticles; i++) {
-                        const offset = i * 12;
-                        flat[i * 2] = view.getFloat32(offset + 4, true);
-                        flat[i * 2 + 1] = view.getFloat32(offset + 8, true);
+                        const offset = i * 13;
+                        flat[i * 2] = view.getFloat32(offset + 5, true);     // X at offset 5
+                        flat[i * 2 + 1] = view.getFloat32(offset + 9, true); // Y at offset 9
                     }
 
                     // Debug output
@@ -214,7 +222,6 @@
     socket.onclose = () => console.log("WebSocket closed");
 
     // Add zoom control
-    let zoomLevel = 1.0;
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const zoomFactor = 1.1;
@@ -230,38 +237,6 @@
       // Clamp zoom level to reasonable range
       zoomLevel = Math.max(0.1, Math.min(5.0, zoomLevel));
       
-      // Update vertex shader
-      const updatedVsSource = `
-        attribute vec2 a_position;
-        uniform vec2 u_resolution;
-        uniform vec2 u_viewport;
-        
-        void main() {
-          vec2 pos = a_position - u_viewport;
-          vec2 zoomedPos = pos / (3000.0 * ${zoomLevel.toFixed(1)});
-          float aspect = u_resolution.x / u_resolution.y;
-          zoomedPos.y *= aspect;
-          gl_Position = vec4(zoomedPos, 0, 1);
-          gl_PointSize = ${Math.max(2.0, 5.0 / zoomLevel).toFixed(1)};
-        }
-      `;
-      
-      // Recompile shader with new zoom level
-      const newVsShader = compile(gl.VERTEX_SHADER, updatedVsSource);
-      const program = gl.createProgram();
-      gl.attachShader(program, newVsShader);
-      gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fsSource));
-      gl.linkProgram(program);
-      gl.useProgram(program);
-      
-      // Get new attribute and uniform locations
-      posLoc = gl.getAttribLocation(program, "a_position");
-      resLoc = gl.getUniformLocation(program, "u_resolution");
-      vpLoc = gl.getUniformLocation(program, "u_viewport");
-      
-      // Set up attributes again
-      gl.bindBuffer(gl.ARRAY_BUFFER, glBuffer);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-      gl.enableVertexAttribArray(posLoc);
+      // No need to recompile shader, we just update the uniform
     });
   })();
