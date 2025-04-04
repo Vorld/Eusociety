@@ -10,7 +10,7 @@ pub fn spawn_particles(
     simulation_config: Res<SimulationConfigResource>,
 ) {
     let (width, height) = simulation_config.0.world_dimensions;
-    let max_vel = simulation_config.0.max_initial_velocity;
+    let init_vel = 0.0;
 
     info!("Spawning {} particles...", simulation_config.0.particle_count);
 
@@ -22,8 +22,8 @@ pub fn spawn_particles(
                 y: random::<f32>() * height,
             },
             Velocity {
-                dx: (random::<f32>() - 0.5) * max_vel * 2.0,
-                dy: (random::<f32>() - 0.5) * max_vel * 2.0,
+                dx: init_vel,
+                dy: init_vel,
             },
         ));
     }

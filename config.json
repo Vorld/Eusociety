@@ -1,18 +1,19 @@
 {
   "simulation": {
-    "particle_count": 1000000,
+    "particle_count": 1000,
     "world_dimensions": [1000.0, 1000.0],
-    "max_initial_velocity": 5.0,
-    "velocity_randomization_factor": 0.2,
+    "max_velocity": 50.0,
+    "velocity_randomization_factor": 150,
+    "velocity_damping_factor": 0.9999,
     "boundary_behavior": "Bounce",
-    "frame_rate": 300
+    "frame_rate": 165
   },
   "transport": {
     "serializer_type": "Binary",
     "sender_type": "WebSocket",
     "output_path": "output.json",
     "output_frequency": 1,
-    "websocket_address": "127.0.0.1:8080",
+    "websocket_address": "127.0.0.1:8090",
     "delta_compression": false,
     "update_frequency": 1
   }

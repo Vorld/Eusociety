@@ -4,16 +4,16 @@ pub mod systems;
 
 use std::time::{Duration, Instant};
 use std::thread::sleep;
-use tracing::{info, error, debug, trace, warn}; // Added tracing import
+use tracing::{info, error, debug, trace, warn}; 
 
 use bevy_ecs::prelude::*;
 use rand;
 
+
 use crate::config::Config;
-use crate::transport::TransportController; // Removed unused SimulationState, ParticleState
+use crate::transport::TransportController;
 use self::resources::{Time, FrameCounter, SimulationConfigResource, TransportConfigResource};
 use self::systems::{
-    // Removed unused spawn_particles
     move_particles, randomize_velocities, handle_boundaries, 
     extract_and_send, flush_transport, SimulationTimer, SimulationTransport
 };
@@ -41,6 +41,7 @@ impl SimulationApp {
         world.insert_resource(FrameCounter::default());
         world.insert_resource(SimulationTimer::default());
         
+        
         // Create schedule with systems
         let mut schedule = Schedule::default();
         
@@ -51,7 +52,7 @@ impl SimulationApp {
                 let transport_controller = controller.clone();
                 world.insert_resource(SimulationTransport { controller: transport_controller });
                 
-                // Add transport systems to schedule
+                // Add simulation and transport systems to schedule
                 schedule.add_systems((
                     move_particles,
                     randomize_velocities,
@@ -99,7 +100,7 @@ impl SimulationApp {
     fn spawn_initial_particles(&mut self) {
         let config = &self.config.simulation;
         let (width, height) = config.world_dimensions;
-        let max_vel = config.max_initial_velocity;
+        let max_vel = config.max_velocity;
         
         for i in 0..config.particle_count {
             self.world.spawn((

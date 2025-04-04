@@ -354,10 +354,11 @@ try {
     const binaryParser = new BinaryParticleParser();
 
     // --- WebSocket ---
-    const socketUrl = 'ws://127.0.0.1:8080';
+    const socketUrl = 'ws://127.0.0.1:8090';
     let socket = null;
 
     function connectWebSocket() {
+
         statusSpan.textContent = 'Connecting...';
         socket = new WebSocket(socketUrl);
         

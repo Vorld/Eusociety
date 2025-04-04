@@ -211,11 +211,6 @@ impl Sender for WebSocketSender {
             }
         });
 
-        // If we have no clients, log but don't fail
-        if clients.is_empty() {
-            warn!("No WebSocket clients connected to {}", self.address); // Use warn!
-        }
-
         Ok(())
     }
 

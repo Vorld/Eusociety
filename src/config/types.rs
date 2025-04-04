@@ -12,8 +12,9 @@ pub struct Config {
 pub struct SimulationConfig {
     pub particle_count: usize,
     pub world_dimensions: (f32, f32),
-    pub max_initial_velocity: f32,
+    pub max_velocity: f32,
     pub velocity_randomization_factor: f32,
+    pub velocity_damping_factor: f32, // Added damping factor
     pub boundary_behavior: BoundaryBehavior,
     pub frame_rate: u32,
 }
