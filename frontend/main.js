@@ -124,8 +124,8 @@ class EusocietyWebGLRenderer {
 
         // View State
         this.view = {
-            worldWidth: 1000.0, // From config
-            worldHeight: 1000.0, // From config
+            worldWidth: 10000.0, // From config
+            worldHeight: 10000.0, // From config
             viewportX: 500.0, // World coord at center X
             viewportY: 500.0, // World coord at center Y
             targetViewportX: 500.0,

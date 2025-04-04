@@ -22,14 +22,69 @@ pub struct SimulationConfig {
 /// Transport-specific configuration
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransportConfig {
-    pub serializer_type: SerializerType,
-    pub sender_type: SenderType,
+    // Replaced serializer_type with nested SerializerConfig
+    pub serializer: SerializerConfig,
+    pub sender: SenderConfig,
+    pub delta_compression: Option<bool>, // Keep delta compression general for now
+}
+
+// --- Serializer Configuration ---
+
+/// Configuration specific to the JSON serializer (currently empty)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct JsonSerializerConfig {
+    // Add JSON-specific options here later if needed
+}
+
+/// Configuration specific to the Binary serializer (currently empty)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BinarySerializerConfig {
+    // Add Binary-specific options here later if needed
+}
+
+/// Configuration specific to the Null serializer (empty)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NullSerializerConfig {}
+
+/// Enum defining the serializer type and its specific configuration
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "serializer_type", content = "options")] // Nest options
+pub enum SerializerConfig {
+    Json(JsonSerializerConfig),
+    Binary(BinarySerializerConfig),
+    Null(NullSerializerConfig), // Associate Null variant with the empty struct
+}
+
+// --- Sender Configuration ---
+
+/// Configuration specific to the File sender
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileSenderConfig {
     pub output_path: String,
     pub output_frequency: u32,
-    pub websocket_address: Option<String>,
-    pub delta_compression: Option<bool>,
-    pub update_frequency: Option<u32>,
 }
+
+/// Configuration specific to the WebSocket sender
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WebSocketSenderConfig {
+    pub websocket_address: String,
+    pub update_frequency: u32,
+}
+
+/// Configuration specific to the Null sender (empty)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NullSenderConfig {}
+
+/// Enum defining the sender type and its specific configuration
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "sender_type", content = "options")] // Nest options
+pub enum SenderConfig {
+    File(FileSenderConfig),
+    WebSocket(WebSocketSenderConfig),
+    Null(NullSenderConfig), // Associate Null variant with the empty struct
+}
+
+// --- Other Enums ---
 
 /// Defines behavior when particles reach world boundaries
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -38,16 +93,4 @@ pub enum BoundaryBehavior {
     Bounce,
 }
 
-/// Available serialization formats
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum SerializerType {
-    Json,
-    Binary,
-}
-
-/// Available sender types
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum SenderType {
-    File,
-    WebSocket,
-}
+// Note: The old SerializerType enum has been removed.

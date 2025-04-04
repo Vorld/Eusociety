@@ -10,7 +10,7 @@ use tokio_tungstenite::{accept_async, WebSocketStream};
 use futures_util::{SinkExt, StreamExt};
 use futures_util::stream::SplitSink;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{info, error, warn}; // Ensure tracing macros are imported
+use tracing::{info, error}; // Ensure tracing macros are imported (removed warn)
 use std::thread;
 use std::time::Duration;
 
@@ -57,15 +57,8 @@ pub trait SenderClone {
     fn clone_sender(&self) -> Box<dyn Sender>;
 }
 
-// Implement SenderClone for all T that implement Sender + Clone
-impl<T> SenderClone for T
-where
-    T: Sender + Clone + 'static
-{
-    fn clone_sender(&self) -> Box<dyn Sender> {
-        Box::new(self.clone())
-    }
-}
+// Removed the generic implementation to avoid conflicts.
+// Explicit implementations are provided below for each Sender type.
 
 /// File-based sender implementation
 #[derive(Clone)]
@@ -99,16 +92,46 @@ impl Sender for FileSender {
     }
 }
 
+impl SenderClone for FileSender {
+    fn clone_sender(&self) -> Box<dyn Sender> {
+        Box::new(self.clone())
+    }
+}
+
+/// Null sender implementation (no-op)
+#[derive(Clone)]
+pub struct NullSender;
+
+impl Sender for NullSender {
+    fn send(&self, _data: &[u8]) -> Result<(), TransportError> {
+        // Do nothing
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), TransportError> {
+        // Do nothing
+        Ok(())
+    }
+}
+
+// Explicitly implement SenderClone for NullSender
+impl SenderClone for NullSender {
+    fn clone_sender(&self) -> Box<dyn Sender> {
+        Box::new(self.clone())
+    }
+}
+
+
 /// Type alias for a WebSocket client connection
 type WebSocketSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
 /// WebSocket-based sender implementation
 #[derive(Clone)]
 pub struct WebSocketSender {
-    clients: Arc<Mutex<Vec<mpsc::UnboundedSender<Vec<u8>>>>>,
+    clients: Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<Vec<u8>>>>>>, // Use Arc<Vec<u8>>
     _runtime: Option<Arc<Runtime>>,
     address: String,
-} // Fixed missing closing brace
+}
 
 impl WebSocketSender {
     /// Create a new WebSocket sender that listens on the specified address
@@ -199,13 +222,22 @@ impl WebSocketSender {
     }
 }
 
+impl SenderClone for WebSocketSender {
+    fn clone_sender(&self) -> Box<dyn Sender> {
+        Box::new(self.clone())
+    }
+}
+
 impl Sender for WebSocketSender {
     fn send(&self, data: &[u8]) -> Result<(), TransportError> {
+        // Wrap the data in an Arc once
+        let data_arc = Arc::new(data.to_vec()); 
         let mut clients = self.clients.lock().expect("Failed to lock clients mutex");
 
         // Remove clients that encounter errors (they've disconnected)
         clients.retain_mut(|client| {
-            match client.send(data.to_vec()) {
+            // Send a clone of the Arc (cheap operation)
+            match client.send(Arc::clone(&data_arc)) { 
                 Ok(_) => true,
                 Err(_) => false, // Error sending, remove client
             }
@@ -227,7 +259,7 @@ impl Sender for WebSocketSender {
 /// Handle a WebSocket connection
 async fn handle_connection(
     stream: TcpStream,
-    clients: Arc<Mutex<Vec<mpsc::UnboundedSender<Vec<u8>>>>>,
+    clients: Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<Vec<u8>>>>>>, // Use Arc<Vec<u8>>
 ) -> Result<(), TransportError> {
     // Accept the WebSocket connection
     let ws_stream = accept_async(stream)
@@ -235,7 +267,7 @@ async fn handle_connection(
         .map_err(|e| TransportError::WebSocketError(format!("Failed to accept WebSocket connection: {}", e)))?;
 
     // Create a channel for sending data to this client
-    let (client_sender, mut client_receiver) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (client_sender, mut client_receiver) = mpsc::unbounded_channel::<Arc<Vec<u8>>>(); // Use Arc<Vec<u8>>
 
     // Split the WebSocket stream into sender and receiver parts
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
@@ -245,8 +277,12 @@ async fn handle_connection(
 
     // Spawn a task that forwards messages from the channel to the WebSocket
     let send_task = tokio::spawn(async move {
-        while let Some(data) = client_receiver.recv().await {
-            if let Err(e) = ws_sender.send(Message::Binary(data)).await {
+        // Receive Arc<Vec<u8>>
+        while let Some(data_arc) = client_receiver.recv().await { 
+            // Clone the underlying Vec<u8> from the Arc for sending
+            // Message::Binary expects Vec<u8>
+            let data_vec = data_arc.as_ref().clone(); 
+            if let Err(e) = ws_sender.send(Message::Binary(data_vec)).await {
                 error!("Error sending WebSocket message: {}", e); // Use error!
                 break;
             }

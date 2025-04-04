@@ -31,16 +31,27 @@ impl Clone for Box<dyn Serializer> {
     }
 }
 
+/// Null serializer implementation (no-op)
+#[derive(Clone)]
+pub struct NullSerializer;
+
+impl Serializer for NullSerializer {
+    // Ensure this signature exactly matches the trait definition
+    fn serialize_to_bytes(&self, _data: &dyn SerializeObject) -> Result<Vec<u8>, SerializationError> {
+        // Return an empty Vec as there's nothing to serialize
+        Ok(Vec::new())
+    }
+}
+
 /// Helper trait to make Serializer cloneable via object-safe methods
 pub trait SerializerClone {
     fn clone_serializer(&self) -> Box<dyn Serializer>;
 }
 
-// Implement SerializerClone for all T that implement Serializer + Clone
-impl<T> SerializerClone for T 
-where 
-    T: Serializer + Clone + 'static 
-{
+// Removed the generic implementation to avoid conflicts.
+// Explicit implementations are provided below for each Serializer type.
+
+impl SerializerClone for NullSerializer {
     fn clone_serializer(&self) -> Box<dyn Serializer> {
         Box::new(self.clone())
     }
@@ -73,6 +84,12 @@ impl Serializer for JsonSerializer {
     }
 }
 
+impl SerializerClone for JsonSerializer {
+    fn clone_serializer(&self) -> Box<dyn Serializer> {
+        Box::new(self.clone())
+    }
+}
+
 /// Binary serializer implementation using bincode
 #[derive(Clone)]
 pub struct BinarySerializer;
@@ -80,6 +97,12 @@ pub struct BinarySerializer;
 impl Serializer for BinarySerializer {
     fn serialize_to_bytes(&self, data: &dyn SerializeObject) -> Result<Vec<u8>, SerializationError> {
         data.to_binary()
+    }
+}
+
+impl SerializerClone for BinarySerializer {
+    fn clone_serializer(&self) -> Box<dyn Serializer> {
+        Box::new(self.clone())
     }
 }
 
@@ -171,6 +194,11 @@ impl OptimizedBinarySerializer {
         bincode::serialize(&final_state)
             .map_err(SerializationError::BinaryError)
     }
+    
+    /// Check if delta compression is enabled
+    pub fn has_delta_compression(&self) -> bool {
+        self.delta_compressor.is_some()
+    }
 }
 
 impl Serializer for OptimizedBinarySerializer {
@@ -178,5 +206,11 @@ impl Serializer for OptimizedBinarySerializer {
         // For now, fall back to standard binary serialization
         // The specialized serialize_state method should be used for SimulationState
         data.to_binary()
+    }
+}
+
+impl SerializerClone for OptimizedBinarySerializer {
+     fn clone_serializer(&self) -> Box<dyn Serializer> {
+        Box::new(self.clone())
     }
 }

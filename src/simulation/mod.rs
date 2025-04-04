@@ -202,15 +202,3 @@ impl SimulationApp {
     }
 }
 
-/// Resource to track simulation run state
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
-enum RunState {
-    Startup,
-    Running,
-}
-
-impl RunState {
-    fn is_startup(&self) -> bool {
-        matches!(self, RunState::Startup)
-    }
-}

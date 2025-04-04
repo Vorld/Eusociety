@@ -2,19 +2,22 @@ mod serializer;
 mod sender;
 
 use serde::Serialize;
+use std::time::Instant;
+use tracing::{debug, info};
 
 // Re-export types
 pub use self::serializer::{
-    Serializer, SerializationError, JsonSerializer, BinarySerializer, 
+    Serializer, SerializationError, JsonSerializer, BinarySerializer, NullSerializer,
     SerializeObject, OptimizedBinarySerializer, DeltaCompressor
 };
-pub use self::sender::{Sender, TransportError, FileSender, WebSocketSender};
+pub use self::sender::{Sender, TransportError, FileSender, WebSocketSender, NullSender};
+use crate::config::{SenderConfig, TransportConfig, SerializerConfig};
 
 /// Particle state for serialization
 #[derive(Serialize, Clone)]
 pub struct ParticleState {
     pub id: u32,
-    pub x: f32, // Use separate fields instead of array
+    pub x: f32,
     pub y: f32,
 }
 
@@ -34,7 +37,10 @@ pub struct TransportController {
     optimized_serializer: Option<OptimizedBinarySerializer>,
     update_frequency: Option<u32>,
     current_frame: u32,
-    sender_type: crate::config::SenderType,
+    // Performance metrics
+    last_serialization_time_ms: f64,
+    last_send_time_ms: f64,
+    last_data_size_bytes: usize,
 }
 
 impl TransportController {
@@ -43,116 +49,183 @@ impl TransportController {
         serializer: Box<dyn Serializer>,
         sender: Box<dyn Sender>,
     ) -> Self {
-        Self { 
-            serializer, 
+        Self {
+            serializer,
             sender,
             optimized_serializer: None,
             update_frequency: None,
             current_frame: 0,
-            sender_type: crate::config::SenderType::File,
+            last_serialization_time_ms: 0.0,
+            last_send_time_ms: 0.0,
+            last_data_size_bytes: 0,
         }
     }
-    
+
     /// Create a transport controller from configuration
-    pub fn from_config(config: &crate::config::TransportConfig) -> Result<Self, TransportError> {
-        // Create regular serializer based on configuration
-        let serializer: Box<dyn Serializer> = match config.serializer_type {
-            crate::config::SerializerType::Json => Box::new(JsonSerializer),
-            crate::config::SerializerType::Binary => Box::new(BinarySerializer),
+    pub fn from_config(config: &TransportConfig) -> Result<Self, TransportError> {
+        // Create serializer based on the SerializerConfig enum
+        let serializer: Box<dyn Serializer> = match &config.serializer {
+            SerializerConfig::Json(_) => Box::new(JsonSerializer),
+            SerializerConfig::Binary(_) => Box::new(BinarySerializer),
+            SerializerConfig::Null(_) => Box::new(NullSerializer),
         };
-        
-        // Create sender based on configuration
-        let sender: Box<dyn Sender> = match config.sender_type {
-            crate::config::SenderType::File => {
-                Box::new(FileSender::new(&config.output_path)?)
+
+        let mut update_frequency: Option<u32> = None;
+        let mut optimized_serializer: Option<OptimizedBinarySerializer> = None;
+
+        // Create sender based on the SenderConfig enum
+        let sender: Box<dyn Sender> = match &config.sender {
+            SenderConfig::File(file_config) => {
+                update_frequency = Some(file_config.output_frequency);
+                optimized_serializer = None;
+                Box::new(FileSender::new(&file_config.output_path)?)
             },
-            crate::config::SenderType::WebSocket => {
-                // Use WebSocketSender with the configured address
-                if let Some(addr) = &config.websocket_address {
-                    Box::new(WebSocketSender::new(addr)?)
+            SenderConfig::WebSocket(ws_config) => {
+                update_frequency = Some(ws_config.update_frequency);
+                // Create optimized binary serializer with delta compression if enabled
+                let threshold = if config.delta_compression == Some(true) {
+                    info!("Delta compression enabled with threshold 0.1");
+                    Some(0.1f32)
                 } else {
-                    return Err(TransportError::ConfigurationError(
-                        "WebSocket address not provided in configuration".to_string()
-                    ));
-                }
+                    info!("Delta compression disabled");
+                    None
+                };
+                optimized_serializer = Some(OptimizedBinarySerializer::new(threshold));
+
+                Box::new(WebSocketSender::new(&ws_config.websocket_address)?)
+            },
+            SenderConfig::Null(_) => {
+                update_frequency = None;
+                optimized_serializer = None;
+                Box::new(NullSender)
             }
         };
-        
-        // Create optimized binary serializer with delta compression if using WebSocket and it's enabled
-        let optimized_serializer = if let crate::config::SenderType::WebSocket = config.sender_type {
-            let threshold = if config.delta_compression == Some(true) {
-                // Use delta compression with a reasonable threshold (0.1 units)
-                Some(0.1f32)
-            } else {
-                None
-            };
-            
-            Some(OptimizedBinarySerializer::new(threshold))
-        } else {
-            None
-        };
-        
-        // Set update frequency if specified in config
-        let update_frequency = config.update_frequency;
-        
+
+        // Create the controller instance
         let mut controller = Self::new(serializer, sender);
         controller.optimized_serializer = optimized_serializer;
         controller.update_frequency = update_frequency;
-        controller.sender_type = config.sender_type.clone();
-        
+
         Ok(controller)
     }
-    
-    /// Serialize and send simulation state
-    pub fn send_state<T: SerializeObject + Serialize>(&self, state: &T) -> Result<(), TransportError> {
+
+    /// Serialize and send simulation state (Generic version, might be less used now)
+    pub fn send_state<T: SerializeObject + Serialize>(&mut self, state: &T) -> Result<(), TransportError> {
+        let serialization_start = Instant::now();
+        
         // Serialize data
         let data = self.serializer.serialize_to_bytes(state)
             .map_err(TransportError::SerializationError)?;
+            
+        let serialization_time = serialization_start.elapsed();
+        self.last_serialization_time_ms = serialization_time.as_secs_f64() * 1000.0;
+        self.last_data_size_bytes = data.len();
+
+        let send_start = Instant::now();
         
         // Send data through sender
         self.sender.send(&data)?;
         
+        let send_time = send_start.elapsed();
+        self.last_send_time_ms = send_time.as_secs_f64() * 1000.0;
+
+        debug!(
+            serialization_ms = self.last_serialization_time_ms,
+            send_ms = self.last_send_time_ms,
+            data_size_bytes = self.last_data_size_bytes,
+            "Transport metrics"
+        );
+
         Ok(())
     }
-    
+
     /// Serialize and send simulation state with optimized serializer if available
     pub fn send_simulation_state(&mut self, state: &SimulationState) -> Result<(), TransportError> {
         // Increment frame counter
         self.current_frame += 1;
-        
+
         // Check if we should send this frame based on update frequency
         if let Some(freq) = self.update_frequency {
-            if self.current_frame % freq != 0 {
+            if freq > 0 && self.current_frame % freq != 0 {
                 return Ok(());
             }
         }
+
+        let serialization_start = Instant::now();
         
-        // Use optimized serializer if available
+        // Use optimized serializer if available (typically for WebSocket)
         let data = if let Some(serializer) = &mut self.optimized_serializer {
-            serializer.serialize_state(state)
-                .map_err(TransportError::SerializationError)?
+            // Count particles before potentially filtering them
+            let original_particle_count = state.particles.len();
+            
+            // Serialize with potentially filtering out unchanged particles
+            let result = serializer.serialize_state(state)
+                .map_err(TransportError::SerializationError)?;
+                
+            // Log detailed info if using delta compression
+            if serializer.has_delta_compression() {
+                debug!(
+                    original_particles = original_particle_count,
+                    serialized_size_bytes = result.len(),
+                    "Delta compression metrics"
+                );
+            }
+            
+            result
         } else {
+            // Fallback to the standard serializer
             self.serializer.serialize_to_bytes(state)
                 .map_err(TransportError::SerializationError)?
         };
         
+        let serialization_time = serialization_start.elapsed();
+        self.last_serialization_time_ms = serialization_time.as_secs_f64() * 1000.0;
+        self.last_data_size_bytes = data.len();
+
+        // Start timing the send operation
+        let send_start = Instant::now();
+        
         // Send data
         self.sender.send(&data)?;
         
+        let send_time = send_start.elapsed();
+        self.last_send_time_ms = send_time.as_secs_f64() * 1000.0;
+
+        // Detailed metrics
+        info!(
+            frame = self.current_frame,
+            particles = state.particles.len(),
+            serialization_ms = self.last_serialization_time_ms,
+            send_ms = self.last_send_time_ms,
+            data_size_mb = (self.last_data_size_bytes as f64 / 1_048_576.0),
+            "Transport performance"
+        );
+
         Ok(())
     }
-    
+
     /// Flush the sender to ensure data is written
     pub fn flush(&self) -> Result<(), TransportError> {
         self.sender.flush()
     }
-    
-    /// Get a reference to the WebSocket sender if available
+
+    /// Get a reference to the WebSocket sender if available by checking the sender's type
     pub fn get_websocket_sender(&self) -> Option<&WebSocketSender> {
-        if let crate::config::SenderType::WebSocket = self.sender_type {
-            self.sender.as_websocket_sender()
-        } else {
-            None
-        }
+        self.sender.as_websocket_sender()
+    }
+    
+    /// Get the last measured serialization time in milliseconds
+    pub fn last_serialization_time_ms(&self) -> f64 {
+        self.last_serialization_time_ms
+    }
+    
+    /// Get the last measured send time in milliseconds
+    pub fn last_send_time_ms(&self) -> f64 {
+        self.last_send_time_ms
+    }
+    
+    /// Get the last measured data size in bytes
+    pub fn last_data_size_bytes(&self) -> usize {
+        self.last_data_size_bytes
     }
 }

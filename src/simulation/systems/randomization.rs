@@ -13,6 +13,9 @@ pub fn randomize_velocities(
     let randomization_factor = simulation_config.0.velocity_randomization_factor;
     let damping_factor = simulation_config.0.velocity_damping_factor;
     let delta_seconds = time.delta_seconds;
+    // Pre-calculate max_velocity_squared outside the loop
+    let max_velocity = simulation_config.0.max_velocity;
+    let max_velocity_squared = max_velocity * max_velocity; 
     
     // Using par_for_each for parallel iteration
     query.par_iter_mut().for_each(|mut velocity| {
@@ -26,16 +29,18 @@ pub fn randomize_velocities(
         velocity.dx += (rng.gen::<f32>() - 0.5) * randomization_factor * delta_seconds;
         velocity.dy += (rng.gen::<f32>() - 0.5) * randomization_factor * delta_seconds;
 
-        // Calculate the overall velocity magnitude
-        let speed = (velocity.dx.powi(2) + velocity.dy.powi(2)).sqrt();
-        let max_velocity = simulation_config.0.max_velocity;
+        // --- Optimization: Use squared comparison to avoid sqrt ---
+        let speed_squared = velocity.dx.powi(2) + velocity.dy.powi(2);
 
-        // Clamp the velocity to the maximum allowed speed
-        if speed > max_velocity {
+        // Clamp the velocity only if necessary
+        if speed_squared > max_velocity_squared {
+            // Only calculate sqrt when needed
+            let speed = speed_squared.sqrt(); 
             let scale = max_velocity / speed;
             velocity.dx *= scale;
             velocity.dy *= scale;
         }
+        // --- End Optimization ---
 
     });
 }
