@@ -27,6 +27,7 @@ pub struct TransportConfig {
     pub delta_compression: Option<bool>, // Keep delta compression general for now
     pub delta_threshold: Option<f32>,
     pub parallel_serialization: Option<ParallelSerializationConfig>,
+    pub log_frequency: Option<u32>, // Frequency to log transport performance (every N frames, 0=always, None=never)
 }
 
 /// Configuration for parallel serialization

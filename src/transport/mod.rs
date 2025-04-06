@@ -36,7 +36,8 @@ pub struct TransportController {
     serializer: Box<dyn Serializer>,
     sender: Box<dyn Sender>,
     optimized_serializer: Option<OptimizedBinarySerializer>,
-    update_frequency: Option<u32>,
+    update_frequency: Option<u32>, // Frequency to send data
+    log_frequency: Option<u32>,    // Frequency to log performance
     current_frame: u32,
     // Performance metrics
     last_serialization_time_ms: f64,
@@ -55,6 +56,7 @@ impl TransportController {
             sender,
             optimized_serializer: None,
             update_frequency: None,
+            log_frequency: None, // Initialize log_frequency
             current_frame: 0,
             last_serialization_time_ms: 0.0,
             last_send_time_ms: 0.0,
@@ -144,9 +146,18 @@ impl TransportController {
         };
 
         // Create the controller instance
+        // Create the controller instance
         let mut controller = Self::new(serializer, sender);
         controller.optimized_serializer = optimized_serializer;
         controller.update_frequency = update_frequency;
+        controller.log_frequency = config.log_frequency; // Read log_frequency from config
+
+        // Log the configured log frequency
+        match config.log_frequency {
+            Some(0) => info!("Transport performance logging enabled for every frame."),
+            Some(freq) => info!("Transport performance logging enabled every {} frames.", freq),
+            None => info!("Transport performance logging disabled."),
+        }
 
         Ok(controller)
     }
@@ -233,15 +244,23 @@ impl TransportController {
         let send_time = send_start.elapsed();
         self.last_send_time_ms = send_time.as_secs_f64() * 1000.0;
 
-        // Detailed metrics
-        info!(
-            frame = self.current_frame,
-            particles = state.particles.len(),
-            serialization_ms = self.last_serialization_time_ms,
-            send_ms = self.last_send_time_ms,
-            data_size_mb = (self.last_data_size_bytes as f64 / 1_048_576.0),
-            "Transport performance"
+        // Log performance metrics based on log_frequency
+        let should_log = match self.log_frequency {
+            Some(0) => true, // Log every frame if 0
+            Some(freq) => self.current_frame % freq == 0, // Log every freq frames
+            None => false, // Never log if None
+        };
+
+        if should_log {
+            info!(
+                frame = self.current_frame,
+                particles = state.particles.len(), // <-- Added comma
+                serialization_ms = self.last_serialization_time_ms, // <-- Added comma
+                send_ms = self.last_send_time_ms,
+                data_size_mb = (self.last_data_size_bytes as f64 / 1_048_576.0),
+                "Transport performance"
         );
+        } // <-- Added missing closing brace here
 
         Ok(())
     }

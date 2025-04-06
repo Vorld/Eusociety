@@ -295,87 +295,61 @@ impl OptimizedBinarySerializer {
                          std::mem::size_of::<f64>() + // timestamp
                          std::mem::size_of::<u64>(); // array length prefix
         
-        let total_size = header_size + (state.particles.len() * particle_size);
-        
-        // Pre-allocate buffer
-        let buffer = Arc::new(Mutex::new(Vec::with_capacity(total_size)));
-        
-        // First, serialize the header (frame, timestamp, and particle count)
+        // let total_size = header_size + (state.particles.len() * particle_size); // Size calculation might be less precise now
+
+        // --- Refactored Parallel Serialization ---
+
+        // 1. Serialize header sequentially first
+        let mut final_buffer = Vec::with_capacity(header_size + state.particles.len() * particle_size); // Pre-allocate roughly
+
+        // Frame (u64)
         {
-            let mut buffer_lock = buffer.lock().unwrap();
-            
-            // Frame (u64)
             let frame_bytes = bincode::serialize(&state.frame)
                 .map_err(SerializationError::BinaryError)?;
-            buffer_lock.extend_from_slice(&frame_bytes);
-            
+            final_buffer.extend_from_slice(&frame_bytes);
+
             // Timestamp (f64)
             let timestamp_bytes = bincode::serialize(&state.timestamp)
                 .map_err(SerializationError::BinaryError)?;
-            buffer_lock.extend_from_slice(&timestamp_bytes);
-            
+            final_buffer.extend_from_slice(&timestamp_bytes);
+
             // Particle count as u64 (for bincode length prefix)
             let count_bytes = bincode::serialize(&(state.particles.len() as u64))
                 .map_err(SerializationError::BinaryError)?;
-            buffer_lock.extend_from_slice(&count_bytes);
+            final_buffer.extend_from_slice(&count_bytes);
         }
-        
-        // Determine optimal chunk size
-        let chunk_size = std::cmp::max(1, state.particles.len() / rayon::current_num_threads());
-        
-        // Create offsets for each thread
-        let offsets: Vec<(usize, usize)> = (0..state.particles.len())
-            .step_by(chunk_size)
-            .map(|start| {
-                let end = std::cmp::min(start + chunk_size, state.particles.len());
-                (start, end)
-            })
-            .collect();
-        
-        // Process particles in parallel and directly insert into the pre-allocated buffer
-        let result = offsets.par_iter()
-            .try_for_each(|(start_idx, end_idx)| {
-                // Serialize each particle in this chunk
-                let mut chunk_data = Vec::with_capacity((end_idx - start_idx) * particle_size);
-                
-                for i in *start_idx..*end_idx {
-                    let particle = &state.particles[i];
-                    
+
+
+        // 2. Process particles in parallel, collecting byte chunks
+        let particle_chunks: Result<Vec<Vec<u8>>, SerializationError> = state.particles
+            .par_chunks(self.parallel_threshold) // Use configured threshold or adjust chunking strategy
+            .map(|particle_chunk| {
+                // Serialize this chunk of particles into a local buffer
+                let mut chunk_buffer = Vec::with_capacity(particle_chunk.len() * particle_size);
+                for particle in particle_chunk {
+                    // Serialize the whole particle struct (or fields individually if needed)
+                    // Using individual fields here to maintain exact compatibility
                     // ID (u32)
-                    let id_bytes = bincode::serialize(&particle.id)
-                        .map_err(SerializationError::BinaryError)?;
-                    chunk_data.extend_from_slice(&id_bytes);
-                    
+                    chunk_buffer.extend_from_slice(&bincode::serialize(&particle.id)?);
                     // X position (f32)
-                    let x_bytes = bincode::serialize(&particle.x)
-                        .map_err(SerializationError::BinaryError)?;
-                    chunk_data.extend_from_slice(&x_bytes);
-                    
+                    chunk_buffer.extend_from_slice(&bincode::serialize(&particle.x)?);
                     // Y position (f32)
-                    let y_bytes = bincode::serialize(&particle.y)
-                        .map_err(SerializationError::BinaryError)?;
-                    chunk_data.extend_from_slice(&y_bytes);
+                    chunk_buffer.extend_from_slice(&bincode::serialize(&particle.y)?);
                 }
-                
-                // Append this chunk's data to the main buffer
-                let mut buffer_lock = buffer.lock().unwrap();
-                buffer_lock.extend_from_slice(&chunk_data);
-                
-                Ok(())
-            });
-        
-        // Handle any errors from parallel processing
-        if let Err(e) = result {
-            return Err(e);
+                Ok(chunk_buffer)
+            })
+            .collect(); // Collect results from parallel threads
+
+        // Handle potential errors during parallel serialization
+        let collected_chunks = particle_chunks?;
+
+        // 3. Concatenate the collected chunks into the final buffer
+        for chunk in collected_chunks {
+            final_buffer.extend_from_slice(&chunk);
         }
-        
-        // Return the complete buffer
-        let final_buffer = Arc::try_unwrap(buffer)
-            .map_err(|_| SerializationError::ParallelError("Failed to unwrap buffer".to_string()))?
-            .into_inner()
-            .map_err(|e| SerializationError::ParallelError(format!("Failed to unlock buffer: {}", e)))?;
-            
+
         Ok(final_buffer)
+        // --- End Refactored Parallel Serialization ---
     }
     
     /// Check if delta compression is enabled

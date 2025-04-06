@@ -1,20 +1,21 @@
 {
   "simulation": {
-    "particle_count": 1000000,
+    "particle_count": 100000,
     "world_dimensions": [10000.0, 10000.0],
     "max_velocity": 50.0,
     "velocity_randomization_factor": 150,
     "velocity_damping_factor": 0.9999,
     "boundary_behavior": "Bounce",
-    "frame_rate": 60
+    "frame_rate": 165
   },
   "transport": {
     "delta_compression": false,
     "parallel_serialization": {
       "enabled": true,
-      "threshold": 50000,
+      "threshold": 20000,
       "thread_count": 0
     },
+    "log_frequency": 100,
     "serializer": {
       "serializer_type": "Binary",
       "options": {}
