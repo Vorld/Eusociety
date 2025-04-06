@@ -10,21 +10,25 @@ use bevy_ecs::prelude::*;
 use rand;
 
 
+use bevy_ecs::prelude::*; // Ensure ResMut, Res etc are available
 use crate::config::Config;
-use crate::transport::TransportController;
-use self::resources::{Time, FrameCounter, SimulationConfigResource, TransportConfigResource};
+use crate::transport::TransportController; // Keep this import
+use self::resources::{Time, FrameCounter, SimulationConfigResource, TransportConfigResource, CurrentSimulationState};
 use self::systems::{
-    move_particles, randomize_velocities, handle_boundaries, 
-    extract_and_send, flush_transport, SimulationTimer, SimulationTransport
+    move_particles, randomize_velocities, handle_boundaries,
+    update_current_simulation_state_resource, // Keep this import
+    send_simulation_data_system, // Import the new system
+    // Removed: extract_and_send, flush_transport, SimulationTimer, SimulationTransport
 };
+// Removed: use crate::simulation::systems::state_export::update_current_simulation_state_resource; // No longer needed as it's imported above
 
 /// The main simulation application
 pub struct SimulationApp {
     world: World,
     schedule: Schedule,
-    transport: Option<TransportController>,
+    // transport_controller: Option<TransportController>, // Removed field
     running: bool,
-    config: Config,
+    config: Config, // Keep config for spawning particles etc.
 }
 
 impl SimulationApp {
@@ -39,44 +43,35 @@ impl SimulationApp {
         // Add simulation resources
         world.insert_resource(Time::default());
         world.insert_resource(FrameCounter::default());
-        world.insert_resource(SimulationTimer::default());
-        
-        
-        // Create schedule with systems
-        let mut schedule = Schedule::default();
-        
-        // Create transport controller
-        let transport = match TransportController::from_config(&config.transport) {
-            Ok(controller) => {
-                // Add transport resource to world if created successfully
-                let transport_controller = controller.clone();
-                world.insert_resource(SimulationTransport { controller: transport_controller });
-                
-                // Add simulation and transport systems to schedule
-                schedule.add_systems((
-                    move_particles,
-                    randomize_velocities,
-                    handle_boundaries,
-                    extract_and_send,
-                    flush_transport.after(extract_and_send),
-                ));
-                
-                Some(controller)
-            },
-            Err(err) => {
-                error!("Failed to create transport controller: {}", err);
+        // Removed: world.insert_resource(SimulationTimer::default());
+        world.init_resource::<CurrentSimulationState>(); // Initialize new state resource
 
-                // Add standard systems without transport
-                schedule.add_systems((
-                    move_particles,
-                    randomize_velocities,
-                    handle_boundaries,
-                ));
-                
-                None
+        // Create transport controller and insert as resource
+        match TransportController::from_config(&config.transport) {
+            Ok(controller) => {
+                world.insert_resource(controller); // Insert as resource
+            }
+            Err(err) => {
+                // Log error, but continue without transport if it fails
+                error!("Failed to create transport controller: {}. Transport will be disabled.", err);
+                // Optionally insert a default/null controller or handle differently
             }
         };
-        
+
+        // Create schedule with systems
+        let mut schedule = Schedule::default();
+
+        // Add core simulation systems and the new transport system
+        schedule.add_systems((
+            move_particles,
+            randomize_velocities,
+            handle_boundaries,
+            // Add the state export system to run after simulation logic
+            update_current_simulation_state_resource.after(handle_boundaries),
+            // Add the new transport system to run after state export
+            send_simulation_data_system.after(update_current_simulation_state_resource),
+        ));
+
         // Store particle count for initialization
         let particle_count = config.simulation.particle_count;
         
@@ -84,7 +79,7 @@ impl SimulationApp {
         let mut app = Self {
             world,
             schedule,
-            transport,
+            // transport_controller, // Field removed
             running: false,
             config,
         };
@@ -94,6 +89,18 @@ impl SimulationApp {
         info!("Initialization complete.");
 
         app
+    }
+
+    /// Runs the simulation schedule once.
+    /// Intended for benchmarking or step-by-step execution.
+    pub fn run_schedule_once(&mut self) {
+        self.schedule.run(&mut self.world);
+    }
+
+    /// Provides mutable access to the simulation world.
+    /// Intended for benchmarking or advanced integration.
+    pub fn get_world_mut(&mut self) -> &mut World {
+        &mut self.world
     }
     
     /// Spawn initial particles
@@ -150,9 +157,11 @@ impl SimulationApp {
                 frame_count.timestamp = elapsed_seconds;
             }
             
-            // Run systems (including transport systems if configured)
+            // Run simulation systems (including the new transport system)
             self.schedule.run(&mut self.world);
-            
+
+            // --- Transport Logic Removed (Now handled by send_simulation_data_system) ---
+
             // Increment frame counter for debugging
             frame_counter += 1;
             
@@ -171,10 +180,14 @@ impl SimulationApp {
                 }
 
                 // Debug connected WebSocket clients if using WebSocket transport
-                if let Some(transport) = &self.world.get_resource::<SimulationTransport>() {
-                    if let Some(ws_sender) = transport.controller.get_websocket_sender() {
+                // Access controller via world resource now
+                if let Some(controller) = self.world.get_resource::<TransportController>() {
+                    if let Some(ws_sender) = controller.get_websocket_sender() {
                         debug!(clients = ws_sender.client_count(), "WebSocket clients connected");
                     }
+                } else {
+                    // Optional: Log if controller resource is missing (e.g., due to init failure)
+                    // trace!("TransportController resource not found for client count debug.");
                 }
             }
 
@@ -201,4 +214,3 @@ impl SimulationApp {
         self.running = false;
     }
 }
-

@@ -1,4 +1,5 @@
 use bevy_ecs::system::Resource;
+use crate::transport::SimulationState; // Added import
 
 /// Simulation frame counter
 #[derive(Resource, Debug, Default)]
@@ -30,3 +31,7 @@ pub struct SimulationConfigResource(pub crate::config::SimulationConfig);
 /// TransportConfig as a resource for systems
 #[derive(Resource)]
 pub struct TransportConfigResource(pub crate::config::TransportConfig);
+
+/// Resource to hold the latest simulation state snapshot for transport
+#[derive(Resource, Default, Clone, Debug)] // Added Debug derive for potential logging
+pub struct CurrentSimulationState(pub SimulationState);

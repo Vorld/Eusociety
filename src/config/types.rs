@@ -22,10 +22,19 @@ pub struct SimulationConfig {
 /// Transport-specific configuration
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransportConfig {
-    // Replaced serializer_type with nested SerializerConfig
     pub serializer: SerializerConfig,
     pub sender: SenderConfig,
     pub delta_compression: Option<bool>, // Keep delta compression general for now
+    pub delta_threshold: Option<f32>,
+    pub parallel_serialization: Option<ParallelSerializationConfig>,
+}
+
+/// Configuration for parallel serialization
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ParallelSerializationConfig {
+    pub enabled: bool,
+    pub threshold: Option<usize>,
+    pub thread_count: Option<usize>,
 }
 
 // --- Serializer Configuration ---

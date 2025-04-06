@@ -10,6 +10,11 @@
   },
   "transport": {
     "delta_compression": false,
+    "parallel_serialization": {
+      "enabled": true,
+      "threshold": 50000,
+      "thread_count": 0
+    },
     "serializer": {
       "serializer_type": "Binary",
       "options": {}

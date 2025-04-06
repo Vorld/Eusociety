@@ -1,9 +1,10 @@
 mod serializer;
 mod sender;
 
+use bevy_ecs::prelude::Resource; // Added import
 use serde::Serialize;
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, error}; // Added error import for potential use
 
 // Re-export types
 pub use self::serializer::{
@@ -14,7 +15,7 @@ pub use self::sender::{Sender, TransportError, FileSender, WebSocketSender, Null
 use crate::config::{SenderConfig, TransportConfig, SerializerConfig};
 
 /// Particle state for serialization
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)] // Added Debug
 pub struct ParticleState {
     pub id: u32,
     pub x: f32,
@@ -22,7 +23,7 @@ pub struct ParticleState {
 }
 
 /// Complete simulation state for serialization
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, Default)] // Added Debug, Default
 pub struct SimulationState {
     pub frame: u64,
     pub timestamp: f64,
@@ -30,7 +31,7 @@ pub struct SimulationState {
 }
 
 /// Controller for handling serialization and transport of simulation data
-#[derive(Clone)]
+#[derive(Resource, Clone)] // Added Resource derive
 pub struct TransportController {
     serializer: Box<dyn Serializer>,
     sender: Box<dyn Sender>,
@@ -70,8 +71,12 @@ impl TransportController {
             SerializerConfig::Null(_) => Box::new(NullSerializer),
         };
 
-        let mut update_frequency: Option<u32> = None;
-        let mut optimized_serializer: Option<OptimizedBinarySerializer> = None;
+        let mut _update_frequency: Option<u32> = None; // Prefixed with _
+        let mut _optimized_serializer: Option<OptimizedBinarySerializer> = None; // Prefixed with _
+
+        // These variables will be properly assigned within the match below
+        let update_frequency: Option<u32>;
+        let optimized_serializer: Option<OptimizedBinarySerializer>;
 
         // Create sender based on the SenderConfig enum
         let sender: Box<dyn Sender> = match &config.sender {
@@ -82,16 +87,53 @@ impl TransportController {
             },
             SenderConfig::WebSocket(ws_config) => {
                 update_frequency = Some(ws_config.update_frequency);
+                
                 // Create optimized binary serializer with delta compression if enabled
                 let threshold = if config.delta_compression == Some(true) {
-                    info!("Delta compression enabled with threshold 0.1");
-                    Some(0.1f32)
+                    // Use the configured threshold or default to 0.1 if not specified
+                    let threshold_value = config.delta_threshold.unwrap_or(0.1);
+                    info!("Delta compression enabled with threshold {}", threshold_value);
+                    Some(threshold_value)
                 } else {
                     info!("Delta compression disabled");
                     None
                 };
-                optimized_serializer = Some(OptimizedBinarySerializer::new(threshold));
-
+                
+                // Create the optimized serializer
+                let mut opt_serializer = OptimizedBinarySerializer::new(threshold);
+                
+                // Configure parallel serialization if specified
+                if let Some(parallel_config) = &config.parallel_serialization {
+                    opt_serializer.set_parallel(parallel_config.enabled);
+                    
+                    if let Some(threshold) = parallel_config.threshold {
+                        opt_serializer.set_parallel_threshold(threshold);
+                    }
+                    
+                    if let Some(thread_count) = parallel_config.thread_count {
+                        opt_serializer.set_thread_count(thread_count);
+                    }
+                    
+                    // Log the parallel serialization configuration
+                    if parallel_config.enabled {
+                        info!(
+                            threshold = opt_serializer.parallel_threshold(),
+                            threads = if opt_serializer.thread_count() == 0 { 
+                                format!("auto ({})", rayon::current_num_threads())
+                            } else {
+                                opt_serializer.thread_count().to_string()
+                            },
+                            "Parallel serialization enabled"
+                        );
+                    } else {
+                        info!("Parallel serialization disabled");
+                    }
+                } else {
+                    // Default to enabled for WebSocket with large particle counts
+                    info!("Parallel serialization enabled with default settings");
+                }
+                
+                optimized_serializer = Some(opt_serializer);
                 Box::new(WebSocketSender::new(&ws_config.websocket_address)?)
             },
             SenderConfig::Null(_) => {

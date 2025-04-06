@@ -6,9 +6,8 @@ use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{accept_async, WebSocketStream};
+use tokio_tungstenite::accept_async;
 use futures_util::{SinkExt, StreamExt};
-use futures_util::stream::SplitSink;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{info, error}; // Ensure tracing macros are imported (removed warn)
 use std::thread;
@@ -63,7 +62,7 @@ pub trait SenderClone {
 /// File-based sender implementation
 #[derive(Clone)]
 pub struct FileSender {
-    file_path: String,
+    _file_path: String, // Prefixed with _
     file: Arc<Mutex<File>>,
 }
 
@@ -71,7 +70,7 @@ impl FileSender {
     pub fn new(file_path: &str) -> Result<Self, TransportError> {
         let file = File::create(file_path)?;
         Ok(Self {
-            file_path: file_path.to_string(),
+            _file_path: file_path.to_string(), // Use prefixed field name
             file: Arc::new(Mutex::new(file)),
         })
     }
@@ -122,15 +121,15 @@ impl SenderClone for NullSender {
 }
 
 
-/// Type alias for a WebSocket client connection
-type WebSocketSink = SplitSink<WebSocketStream<TcpStream>, Message>;
+// /// Type alias for a WebSocket client connection (Currently unused)
+// type WebSocketSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
 /// WebSocket-based sender implementation
 #[derive(Clone)]
 pub struct WebSocketSender {
     clients: Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<Vec<u8>>>>>>, // Use Arc<Vec<u8>>
     _runtime: Option<Arc<Runtime>>,
-    address: String,
+    _address: String, // Prefixed with _
 }
 
 impl WebSocketSender {
@@ -212,7 +211,7 @@ impl WebSocketSender {
         Ok(Self {
             clients,
             _runtime: own_runtime,
-            address: address.to_string(),
+            _address: address.to_string(), // Prefixed with _
         })
     }
 
