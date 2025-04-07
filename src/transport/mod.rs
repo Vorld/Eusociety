@@ -1,52 +1,93 @@
+//! Handles serialization and transport of simulation data.
+//!
+//! This module defines traits and implementations for:
+//! - Serializing simulation state (`SimulationState`, `ParticleState`) into different formats (JSON, Binary).
+//! - Sending serialized data via different methods (File, WebSocket).
+//! - Optimizations like delta compression and parallel serialization.
+//! - The main `TransportController` resource used by Bevy systems to manage transport.
+
 mod serializer;
 mod sender;
+pub mod delta_compression; 
+pub mod websocket; // Declare the new websocket module
 
 use bevy_ecs::prelude::Resource; // Added import
 use serde::Serialize;
 use std::time::Instant;
-use tracing::{debug, info, error}; // Added error import for potential use
+use tracing::{debug, info}; // Added error import for potential use
 
 // Re-export types
 pub use self::serializer::{
     Serializer, SerializationError, JsonSerializer, BinarySerializer, NullSerializer,
-    SerializeObject, OptimizedBinarySerializer, DeltaCompressor
+    SerializeObject, OptimizedBinarySerializer
 };
-pub use self::sender::{Sender, TransportError, FileSender, WebSocketSender, NullSender};
+// Re-export DeltaCompressor and its metrics from the new module
+pub use self::delta_compression::{DeltaCompressor, DeltaCompressionMetrics};
+// Re-export WebSocketSender from the new module
+pub use self::websocket::WebSocketSender;
+// Re-export other senders and traits from the sender module
+pub use self::sender::{Sender, TransportError, FileSender, NullSender, SenderClone};
 use crate::config::{SenderConfig, TransportConfig, SerializerConfig};
 
-/// Particle state for serialization
-#[derive(Serialize, Clone, Debug)] // Added Debug
+/// Represents the state of a single particle for serialization and transport.
+/// Note: Velocity is often excluded to reduce data size if not needed by the receiver.
+#[derive(Serialize, Clone, Debug)] 
 pub struct ParticleState {
+    /// Unique identifier of the particle (cast to u32 for transport).
     pub id: u32,
+    /// X-coordinate of the particle's position.
     pub x: f32,
+    /// Y-coordinate of the particle's position.
     pub y: f32,
 }
 
-/// Complete simulation state for serialization
-#[derive(Serialize, Clone, Debug, Default)] // Added Debug, Default
+/// Represents the complete state of the simulation at a specific frame, ready for serialization.
+#[derive(Serialize, Clone, Debug, Default)] 
 pub struct SimulationState {
+    /// The simulation frame number for this state snapshot.
     pub frame: u64,
+    /// The simulation time elapsed when this state was captured.
     pub timestamp: f64,
+    /// A list containing the state of all particles in the simulation for this frame.
     pub particles: Vec<ParticleState>,
 }
 
-/// Controller for handling serialization and transport of simulation data
-#[derive(Resource, Clone)] // Added Resource derive
+/// Bevy resource that manages the serialization and sending of simulation state.
+///
+/// This controller holds the configured serializer and sender implementations
+/// and provides the main interface (`send_simulation_state`) for Bevy systems
+/// to trigger data transport. It also handles optimizations like delta compression
+/// and performance logging based on the `TransportConfig`.
+#[derive(Resource, Clone)] 
 pub struct TransportController {
+    /// The primary serializer (e.g., JSON, Binary) used if optimized serializer is not applicable.
     serializer: Box<dyn Serializer>,
+    /// The configured sender (e.g., FileSender, WebSocketSender).
     sender: Box<dyn Sender>,
+    /// An optional optimized serializer, typically `OptimizedBinarySerializer` used with WebSockets.
     optimized_serializer: Option<OptimizedBinarySerializer>,
-    update_frequency: Option<u32>, // Frequency to send data
-    log_frequency: Option<u32>,    // Frequency to log performance
+    /// How often (in frames) to send simulation state updates (0 = every frame). `None` if not applicable (e.g., NullSender).
+    update_frequency: Option<u32>, 
+    /// How often (in frames) to log transport performance metrics (0 = every frame, `None` = never).
+    log_frequency: Option<u32>,    
+    /// Internal counter for the current frame being processed by the controller.
     current_frame: u32,
-    // Performance metrics
+    // --- Performance Metrics ---
+    /// Time taken for the last serialization operation (in milliseconds).
     last_serialization_time_ms: f64,
+    /// Time taken for the last send operation (in milliseconds).
     last_send_time_ms: f64,
+    /// Size of the data payload in the last send operation (in bytes).
     last_data_size_bytes: usize,
 }
 
 impl TransportController {
-    /// Create a new transport controller with the provided serializer and sender
+    /// Creates a basic `TransportController`. Usually `from_config` is preferred.
+    ///
+    /// # Arguments
+    ///
+    /// * `serializer` - A boxed `Serializer` trait object.
+    /// * `sender` - A boxed `Sender` trait object.
     pub fn new(
         serializer: Box<dyn Serializer>,
         sender: Box<dyn Sender>,
@@ -64,9 +105,22 @@ impl TransportController {
         }
     }
 
-    /// Create a transport controller from configuration
+    /// Creates and configures a `TransportController` based on the provided `TransportConfig`.
+    ///
+    /// This factory method instantiates the appropriate serializer and sender based on the
+    /// configuration, sets up optimizations (delta compression, parallel serialization),
+    /// and configures logging and update frequencies.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The transport configuration settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if sender creation fails (e.g., file I/O error, WebSocket bind error).
     pub fn from_config(config: &TransportConfig) -> Result<Self, TransportError> {
-        // Create serializer based on the SerializerConfig enum
+        info!("Configuring transport controller...");
+        // Determine base serializer
         let serializer: Box<dyn Serializer> = match &config.serializer {
             SerializerConfig::Json(_) => Box::new(JsonSerializer),
             SerializerConfig::Binary(_) => Box::new(BinarySerializer),
@@ -162,7 +216,23 @@ impl TransportController {
         Ok(controller)
     }
 
-    /// Serialize and send simulation state (Generic version, might be less used now)
+    /// Serializes and sends an arbitrary `SerializeObject` using the base serializer.
+    ///
+    /// This is a generic method and might be less used than `send_simulation_state`,
+    /// which handles specific optimizations for `SimulationState`.
+    /// It measures and stores serialization/send times and data size.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The type of the object to send, must implement `SerializeObject` and `Serialize`.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - A reference to the object to serialize and send.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if serialization or sending fails.
     pub fn send_state<T: SerializeObject + Serialize>(&mut self, state: &T) -> Result<(), TransportError> {
         let serialization_start = Instant::now();
         
@@ -192,9 +262,25 @@ impl TransportController {
         Ok(())
     }
 
-    /// Serialize and send simulation state with optimized serializer if available
+    /// Serializes and sends the current `SimulationState`.
+    ///
+    /// This is the primary method used by Bevy systems to transport simulation data.
+    /// It handles:
+    /// - Incrementing the internal frame counter.
+    /// - Checking the `update_frequency` to decide whether to send on this frame.
+    /// - Using the `optimized_serializer` (with delta compression and parallelism if configured)
+    ///   if available, otherwise falling back to the base `serializer`.
+    /// - Measuring and logging performance metrics based on `log_frequency`.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - A reference to the `SimulationState` to send.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if serialization or sending fails.
     pub fn send_simulation_state(&mut self, state: &SimulationState) -> Result<(), TransportError> {
-        // Increment frame counter
+        // Increment internal frame counter for frequency checks
         self.current_frame += 1;
 
         // Check if we should send this frame based on update frequency
@@ -265,27 +351,38 @@ impl TransportController {
         Ok(())
     }
 
-    /// Flush the sender to ensure data is written
+    /// Flushes the underlying sender, if necessary.
+    ///
+    /// This ensures that any buffered data is written to the destination (e.g., for `FileSender`).
+    /// It might be a no-op for senders that send immediately (e.g., `WebSocketSender`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if flushing fails.
     pub fn flush(&self) -> Result<(), TransportError> {
         self.sender.flush()
     }
 
-    /// Get a reference to the WebSocket sender if available by checking the sender's type
+    /// Attempts to get a reference to the underlying `WebSocketSender`, if that's the configured sender type.
+    ///
+    /// Returns `Some(&WebSocketSender)` if the sender is a WebSocket sender, `None` otherwise.
+    /// This allows accessing WebSocket-specific methods like `client_count`.
     pub fn get_websocket_sender(&self) -> Option<&WebSocketSender> {
-        self.sender.as_websocket_sender()
+        // The as_websocket_sender method is defined on the Sender trait
+        self.sender.as_websocket_sender() 
     }
     
-    /// Get the last measured serialization time in milliseconds
+    /// Returns the serialization time recorded for the last `send_state` or `send_simulation_state` call, in milliseconds.
     pub fn last_serialization_time_ms(&self) -> f64 {
         self.last_serialization_time_ms
     }
     
-    /// Get the last measured send time in milliseconds
+    /// Returns the send time recorded for the last `send_state` or `send_simulation_state` call, in milliseconds.
     pub fn last_send_time_ms(&self) -> f64 {
         self.last_send_time_ms
     }
     
-    /// Get the last measured data size in bytes
+    /// Returns the data size recorded for the last `send_state` or `send_simulation_state` call, in bytes.
     pub fn last_data_size_bytes(&self) -> usize {
         self.last_data_size_bytes
     }

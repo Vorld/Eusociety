@@ -1,7 +1,9 @@
+//! Handles loading and validation of simulation configuration from a JSON file.
+
 use std::fs;
 use thiserror::Error;
 
-// Re-export types
+// Re-export configuration types for easier access from other modules.
 pub use self::types::{
     Config, SimulationConfig, TransportConfig, BoundaryBehavior,
     SerializerConfig, JsonSerializerConfig, BinarySerializerConfig, // Serializer types
@@ -22,10 +24,20 @@ pub enum ConfigError {
     ValidationError(String),
 }
 
-// Config loader implementation
+/// Provides methods for loading and validating the simulation `Config`.
 pub struct ConfigLoader;
 
 impl ConfigLoader {
+    /// Loads configuration from a JSON file at the specified path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the configuration file (e.g., "config.json").
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if the file cannot be read, JSON parsing fails,
+    /// or the configuration fails validation checks.
     pub fn from_file(path: &str) -> Result<Config, ConfigError> {
         let file_content = fs::read_to_string(path)
             .map_err(ConfigError::FileReadError)?;
@@ -39,15 +51,29 @@ impl ConfigLoader {
         Ok(config)
     }
 
+    /// Validates the loaded `Config` struct.
+    ///
+    /// Checks include:
+    /// - Positive particle count.
+    /// - Positive world dimensions.
+    /// - Positive frame rate.
+    /// - Sender-specific frequency validation (if applicable).
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - A reference to the `Config` struct to validate.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::ValidationError` if any validation check fails.
     pub fn validate(config: &Config) -> Result<(), ConfigError> {
-        // Validate particle count
+        // --- Simulation Config Validation ---
         if config.simulation.particle_count == 0 {
             return Err(ConfigError::ValidationError(
                 "Particle count must be greater than 0".to_string()
             ));
         }
 
-        // Validate world dimensions
         let (width, height) = config.simulation.world_dimensions;
         if width <= 0.0 || height <= 0.0 {
             return Err(ConfigError::ValidationError(
@@ -55,36 +81,36 @@ impl ConfigLoader {
             ));
         }
 
-        // Validate frame rate
         if config.simulation.frame_rate == 0 {
             return Err(ConfigError::ValidationError(
                 "Frame rate must be greater than 0".to_string()
             ));
         }
 
-        // Validate sender-specific frequency (if applicable)
-        match &config.transport.sender { // Match on reference
-            SenderConfig::File(file_config) => { // Use match ergonomics (binds file_config by ref)
+        // --- Transport Config Validation ---
+        match &config.transport.sender { 
+            SenderConfig::File(file_config) => { 
                 if file_config.output_frequency == 0 {
                     return Err(ConfigError::ValidationError(
                         "File sender output_frequency must be greater than 0".to_string()
                     ));
                 }
             }
-            SenderConfig::WebSocket(ws_config) => { // Use match ergonomics (binds ws_config by ref)
+            SenderConfig::WebSocket(ws_config) => { 
                 if ws_config.update_frequency == 0 {
                     return Err(ConfigError::ValidationError(
                         "WebSocket sender update_frequency must be greater than 0".to_string()
                     ));
                 }
-                // Optionally validate websocket_address format here if needed
+                // TODO: Consider adding basic validation for websocket_address format (e.g., contains ':')
             }
-            SenderConfig::Null(_) => { // Use match ergonomics (ignores inner data)
-                // No validation needed for Null sender
+            SenderConfig::Null(_) => { 
+                // No frequency validation needed for Null sender
             }
         }
 
-        // No validation needed for serializer options currently
+        // TODO: Add validation for delta_threshold if delta_compression is true? (e.g., must be positive)
+        // TODO: Add validation for parallel_serialization thresholds/counts? (e.g., must be non-negative)
 
         Ok(())
     }

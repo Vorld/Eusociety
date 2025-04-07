@@ -1,10 +1,23 @@
+//! Contains the Bevy system for applying randomization and damping to particle velocities.
+
 use bevy_ecs::prelude::*;
 use crate::simulation::components::Velocity;
 use crate::simulation::resources::{Time, SimulationConfigResource};
 use rand::thread_rng;
 use rand::Rng;
 
-/// System for adding small random changes to particle velocities
+/// Bevy system that applies damping and random adjustments to particle velocities.
+///
+/// This system simulates effects like drag/friction (damping) and adds small,
+/// random fluctuations to velocity, preventing particles from moving in perfectly
+/// straight lines indefinitely. It also clamps the velocity to the configured `max_velocity`.
+/// Uses parallel iteration (`par_iter_mut`) and thread-local RNG for efficiency.
+///
+/// # Arguments
+///
+/// * `query` - A Bevy query to access mutable `Velocity` components of particles.
+/// * `simulation_config` - The resource containing simulation parameters like randomization factor, damping factor, and max velocity.
+/// * `time` - The `Time` resource providing delta time information.
 pub fn randomize_velocities(
     mut query: Query<&mut Velocity>,
     simulation_config: Res<SimulationConfigResource>,

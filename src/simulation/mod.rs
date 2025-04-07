@@ -1,3 +1,9 @@
+//! Manages the core simulation loop and integrates Bevy ECS.
+//!
+//! This module defines the main `SimulationApp` struct which orchestrates
+//! the setup, execution, and teardown of the particle simulation using
+//! Bevy's Entity Component System (ECS) framework.
+
 pub mod components;
 pub mod resources;
 pub mod systems;
@@ -6,9 +12,8 @@ use std::time::{Duration, Instant};
 use std::thread::sleep;
 use tracing::{info, error, debug, trace, warn}; 
 
-use bevy_ecs::prelude::*;
-use rand;
-
+// Removed unused imports: bevy_ecs::prelude::*, rand
+// `bevy_ecs::prelude::*` is imported again below, keeping that one.
 
 use bevy_ecs::prelude::*; // Ensure ResMut, Res etc are available
 use crate::config::Config;
@@ -18,24 +23,41 @@ use self::systems::{
     move_particles, randomize_velocities, handle_boundaries,
     update_current_simulation_state_resource, // Keep this import
     send_simulation_data_system, // Import the new system
+    spawn_particles, // Import the setup system
     // Removed: extract_and_send, flush_transport, SimulationTimer, SimulationTransport
 };
 // Removed: use crate::simulation::systems::state_export::update_current_simulation_state_resource; // No longer needed as it's imported above
 
-/// The main simulation application
+/// The main simulation application struct.
+///
+/// Encapsulates the Bevy ECS `World`, startup and update `Schedule`s,
+/// and manages the simulation run loop.
 pub struct SimulationApp {
+    /// The Bevy ECS world containing all entities, components, and resources.
     world: World,
-    schedule: Schedule,
-    // transport_controller: Option<TransportController>, // Removed field
+    /// Schedule for systems that run once at the beginning (e.g., spawning particles).
+    startup_schedule: Schedule, 
+    /// Schedule for systems that run every frame during the simulation update loop.
+    update_schedule: Schedule,  
+    /// Flag indicating whether the simulation loop is currently running.
     running: bool,
-    config: Config, // Keep config for spawning particles etc.
+    /// A copy of the initial configuration used for setup and potentially during the run loop.
+    config: Config, 
 }
 
 impl SimulationApp {
-    /// Create a new simulation app with the provided configuration
+    /// Creates a new `SimulationApp` instance.
+    ///
+    /// Initializes the Bevy `World`, sets up resources (configuration, time, state, transport),
+    /// creates the startup and update schedules, and adds the necessary systems.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - The simulation configuration loaded from `config.json`.
     pub fn new(config: Config) -> Self {
         let mut world = World::new();
         
+        info!("Initializing simulation resources...");
         // Add configuration as resources
         world.insert_resource(SimulationConfigResource(config.simulation.clone()));
         world.insert_resource(TransportConfigResource(config.transport.clone()));
@@ -58,11 +80,14 @@ impl SimulationApp {
             }
         };
 
-        // Create schedule with systems
-        let mut schedule = Schedule::default();
+        // --- Create Schedules ---
+        // Startup schedule for one-time setup systems
+        let mut startup_schedule = Schedule::default();
+        startup_schedule.add_systems(spawn_particles); // Add particle spawning system
 
-        // Add core simulation systems and the new transport system
-        schedule.add_systems((
+        // Update schedule for systems that run every frame
+        let mut update_schedule = Schedule::default();
+        update_schedule.add_systems((
             move_particles,
             randomize_velocities,
             handle_boundaries,
@@ -71,64 +96,64 @@ impl SimulationApp {
             // Add the new transport system to run after state export
             send_simulation_data_system.after(update_current_simulation_state_resource),
         ));
+        // --- End Schedule Creation ---
 
-        // Store particle count for initialization
-        let particle_count = config.simulation.particle_count;
-        
-        // Create instance first
-        let mut app = Self {
+        // Create instance using the new schedules
+        let app = Self {
             world,
-            schedule,
+            startup_schedule, // Use startup schedule
+            update_schedule,  // Use update schedule
             // transport_controller, // Field removed
             running: false,
-            config,
+            config, // Keep config if needed elsewhere, e.g., in run loop
         };
-        // Manually spawn particles before returning
-        info!("Initializing simulation with {} particles...", particle_count);
-        app.spawn_initial_particles();
-        info!("Initialization complete.");
+
+        // No need to manually spawn particles here, startup schedule handles it.
+        info!("SimulationApp created. Startup systems will run on first execution.");
 
         app
     }
 
-    /// Runs the simulation schedule once.
-    /// Intended for benchmarking or step-by-step execution.
+    /// Runs the systems in the `update_schedule` exactly once.
+    ///
+    /// This is primarily intended for benchmarking specific systems or for
+    /// step-by-step debugging or analysis of the simulation state.
     pub fn run_schedule_once(&mut self) {
-        self.schedule.run(&mut self.world);
+        self.update_schedule.run(&mut self.world); 
     }
 
-    /// Provides mutable access to the simulation world.
-    /// Intended for benchmarking or advanced integration.
+    /// Provides mutable access to the simulation's Bevy ECS `World`.
+    ///
+    /// This allows for direct manipulation or inspection of the world's state,
+    /// typically used for advanced integration, testing, or benchmarking purposes.
     pub fn get_world_mut(&mut self) -> &mut World {
         &mut self.world
     }
     
-    /// Spawn initial particles
-    fn spawn_initial_particles(&mut self) {
-        let config = &self.config.simulation;
-        let (width, height) = config.world_dimensions;
-        let max_vel = config.max_velocity;
-        
-        for i in 0..config.particle_count {
-            self.world.spawn((
-                components::ParticleId(i),
-                components::Position {
-                    x: rand::random::<f32>() * width,
-                    y: rand::random::<f32>() * height,
-                },
-                components::Velocity {
-                    dx: (rand::random::<f32>() - 0.5) * max_vel * 2.0,
-                    dy: (rand::random::<f32>() - 0.5) * max_vel * 2.0,
-                },
-            ));
-        }
-    }
+    // Removed the manual spawn_initial_particles method (now handled by startup schedule)
     
-    /// Run the simulation
+    /// Starts and runs the main simulation loop.
+    ///
+    /// This method first executes the `startup_schedule` once, then enters a loop
+    /// that continues as long as the `running` flag is true. Inside the loop, it:
+    /// 1. Calculates delta time.
+    /// 2. Updates time and frame count resources.
+    /// 3. Runs the `update_schedule`.
+    /// 4. Performs periodic logging and debug output.
+    /// 5. Sleeps to maintain the target frame rate defined in the configuration.
     pub fn run(&mut self) {
+        if self.running {
+            warn!("Simulation run() called while already running.");
+            return;
+        }
         self.running = true;
+        info!("Simulation run loop starting...");
+        // Run startup systems once
+        info!("Running startup schedule...");
+        self.startup_schedule.run(&mut self.world);
+        info!("Startup schedule complete.");
         
-        // Main simulation loop
+        // Main simulation loop (using update schedule)
         let mut last_time = Instant::now();
         let frame_duration = Duration::from_secs_f64(1.0 / self.config.simulation.frame_rate as f64);
         let mut frame_counter = 0;
@@ -157,8 +182,8 @@ impl SimulationApp {
                 frame_count.timestamp = elapsed_seconds;
             }
             
-            // Run simulation systems (including the new transport system)
-            self.schedule.run(&mut self.world);
+            // Run simulation systems (including the new transport system) via the update schedule
+            self.update_schedule.run(&mut self.world);
 
             // --- Transport Logic Removed (Now handled by send_simulation_data_system) ---
 
@@ -207,10 +232,15 @@ impl SimulationApp {
                 sleep(frame_duration - elapsed);
             }
         }
+        info!("Simulation run loop finished.");
     }
     
-    /// Stop the simulation
+    /// Stops the simulation run loop.
+    ///
+    /// Sets the `running` flag to false, causing the `run` method's loop
+    /// to terminate after the current frame completes.
     pub fn stop(&mut self) {
+        info!("Stopping simulation run loop...");
         self.running = false;
     }
 }

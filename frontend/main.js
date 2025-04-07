@@ -138,11 +138,13 @@ class EusocietyWebGLRenderer {
             lerpFactor: 0.2 // Smoothing factor
         };
 
-        // Data
-        this.walkers = []; // Array of { x, y }
+        // Data & State for Interpolation
+        this.previousState = null; // { timestamp: number, walkers: Map<number, {x: number, y: number}> }
+        this.latestState = null;   // { timestamp: number, walkers: Map<number, {x: number, y: number}> }
+        this.interpolatedPositions = new Float32Array(0); // Buffer for interpolated data
 
         // Timing
-        this.lastFrameTime = 0;
+        this.lastRenderTime = 0; // Renamed from lastFrameTime for clarity
         this.frameCount = 0;
         this.fps = 0;
         this.lastFpsUpdate = 0;
@@ -151,6 +153,11 @@ class EusocietyWebGLRenderer {
         this.setupWebGL();
         this.setupEventListeners();
         this.resize(); // Initial resize
+    }
+
+    // Linear interpolation function
+    lerp(a, b, t) {
+        return a + (b - a) * t;
     }
 
     setupWebGL() {
@@ -219,6 +226,32 @@ class EusocietyWebGLRenderer {
         this.canvas.style.cursor = 'grab';
     }
 
+    // Method to update the simulation state received from the backend
+    updateSimulationState(newState) {
+        // Shift latest to previous
+        this.previousState = this.latestState;
+        // Store the new state, converting array to Map using particle ID
+        const walkerMap = new Map();
+        newState.entities.forEach(p => {
+            // Ensure positions are valid numbers before adding
+            if (!isNaN(p.x) && !isNaN(p.y)) {
+                walkerMap.set(p.id, { x: p.x, y: p.y });
+            } else {
+                 console.warn(`Received invalid position for particle ID ${p.id}: (${p.x}, ${p.y}). Skipping.`);
+            }
+        });
+        this.latestState = {
+            timestamp: newState.timestamp, // Use backend timestamp
+            walkers: walkerMap
+        };
+
+        // Update walker count display
+        walkerCountSpan.textContent = this.latestState.walkers.size;
+
+        // Don't update the GPU buffer here directly anymore.
+        // It will be updated in the render loop with interpolated data.
+    }
+
     handleMouseDown(e) {
         this.view.isDragging = true;
         this.view.lastX = e.clientX;
@@ -272,71 +305,113 @@ class EusocietyWebGLRenderer {
         }
     }
 
-    updateWalkers(newWalkersData) {
-        // Expecting [{x, y}, ...]
-        this.walkers = newWalkersData;
-        walkerCountSpan.textContent = this.walkers.length; // Update info panel
+    // updateWalkers is removed - state update is handled by updateSimulationState
 
-        // Update GPU buffer
-        const positions = new Float32Array(this.walkers.length * 2);
-        // Fill positions without logging
-        for (let i = 0; i < this.walkers.length; i++) {
-            positions[i * 2] = this.walkers[i].x;
-            positions[i * 2 + 1] = this.walkers[i].y;
-        }
-
+    render(currentTime) { // currentTime is from requestAnimationFrame (milliseconds)
         const gl = this.gl;
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
-        // console.log(`GPU buffer updated with ${this.walkers.length} walkers.`);
-    }
-
-    render(currentTime) {
-        const gl = this.gl;
-        currentTime *= 0.001; // seconds
+        const now = performance.now(); // Use high-resolution timer
 
         // --- Timing & FPS ---
-        const deltaTime = currentTime - this.lastFrameTime;
-        this.lastFrameTime = currentTime;
+        const deltaTime = (now - this.lastRenderTime) / 1000.0; // Delta time in seconds
+        this.lastRenderTime = now;
         this.frameCount++;
-        if (currentTime - (this.lastFpsUpdate || 0) > 1) {
-            this.fps = this.frameCount;
+        // Use performance.now() for FPS calculation consistency
+        if (now - (this.lastFpsUpdate || 0) > 1000) {
+            this.fps = this.frameCount; // FPS is frames in the last second
             this.frameCount = 0;
             fpsSpan.textContent = this.fps;
-            this.lastFpsUpdate = currentTime;
+            this.lastFpsUpdate = now;
         }
 
-        // --- View Interpolation ---
+        // --- View Panning/Zoom Interpolation ---
         // Reintroduce lerping for smoother panning
         this.view.viewportX += (this.view.targetViewportX - this.view.viewportX) * this.view.lerpFactor;
         this.view.viewportY += (this.view.targetViewportY - this.view.viewportY) * this.view.lerpFactor;
         // Keep lerping for zoom
         this.view.zoom += (this.view.targetZoom - this.view.zoom) * this.view.lerpFactor;
 
+
+        // --- Walker Position Interpolation ---
+        let walkerCount = 0;
+        if (this.latestState) {
+            walkerCount = this.latestState.walkers.size;
+            // Ensure buffer is large enough
+            if (this.interpolatedPositions.length < walkerCount * 2) {
+                this.interpolatedPositions = new Float32Array(walkerCount * 2);
+            }
+
+            let bufferIndex = 0;
+            if (this.previousState && this.previousState.timestamp !== this.latestState.timestamp) {
+                const timeSinceLastUpdate = (now / 1000.0) - this.latestState.timestamp; // Time since latest state arrived (seconds)
+                const timeBetweenUpdates = this.latestState.timestamp - this.previousState.timestamp; // Time between last two states (seconds)
+
+                // Avoid division by zero and ensure time flows forward
+                // Remove Math.min(1.0, ...) to allow extrapolation
+                const interpolationFactor = (timeBetweenUpdates > 0.001)
+                    ? Math.max(0.0, timeSinceLastUpdate / timeBetweenUpdates) // Allow factor > 1.0
+                    : 1.0; // If updates are too close or timestamps equal, just use latest
+
+                // Log the factor if it goes above 1 for debugging extrapolation
+                // if (interpolationFactor > 1.0) {
+                //     console.log(`Extrapolating factor: ${interpolationFactor.toFixed(3)} (since last: ${timeSinceLastUpdate.toFixed(3)}s, between: ${timeBetweenUpdates.toFixed(3)}s)`);
+                // }
+
+                for (const [id, latestPos] of this.latestState.walkers) {
+                    const previousPos = this.previousState.walkers.get(id);
+                    if (previousPos) {
+                        // Interpolate if particle exists in both states
+                        this.interpolatedPositions[bufferIndex++] = this.lerp(previousPos.x, latestPos.x, interpolationFactor);
+                        this.interpolatedPositions[bufferIndex++] = this.lerp(previousPos.y, latestPos.y, interpolationFactor);
+                    } else {
+                        // Particle is new, just use its latest position
+                        this.interpolatedPositions[bufferIndex++] = latestPos.x;
+                        this.interpolatedPositions[bufferIndex++] = latestPos.y;
+                    }
+                }
+            } else {
+                // No previous state or timestamps are the same, just use the latest positions
+                for (const [id, latestPos] of this.latestState.walkers) {
+                    this.interpolatedPositions[bufferIndex++] = latestPos.x;
+                    this.interpolatedPositions[bufferIndex++] = latestPos.y;
+                }
+            }
+            // Trim the buffer view if fewer walkers are present than the buffer size
+            // Note: We use bufferIndex which holds the actual count of filled positions (walkerCount * 2)
+            const bufferDataView = new Float32Array(this.interpolatedPositions.buffer, 0, bufferIndex);
+
+            // Update GPU buffer with interpolated data
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, bufferDataView, gl.DYNAMIC_DRAW);
+
+        } else {
+             // No state yet, ensure buffer is empty or cleared if needed
+             if (this.interpolatedPositions.length > 0) {
+                 this.interpolatedPositions = new Float32Array(0);
+                 gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer);
+                 gl.bufferData(gl.ARRAY_BUFFER, this.interpolatedPositions, gl.DYNAMIC_DRAW); // Clear GPU buffer
+             }
+        }
+
+
         // --- Drawing ---
-        this.resize(); // Che
-        // ck resize
+        this.resize(); // Check resize
         gl.clearColor(1.0, 1.0, 1.0, 1.0); // White background
         gl.clear(gl.COLOR_BUFFER_BIT);
 
-        // Set uniforms
+        // Set uniforms (View related uniforms are already interpolated)
         gl.uniform2f(this.resolutionLocation, gl.canvas.width, gl.canvas.height);
-        gl.uniform2f(this.viewportCenterLocation, this.view.viewportX, this.view.viewportY); // Pass center directly
+        gl.uniform2f(this.viewportCenterLocation, this.view.viewportX, this.view.viewportY);
         gl.uniform1f(this.zoomLocation, this.view.zoom);
-        gl.uniform1f(this.pointSizeLocation, 2.0); // Base walker size (pixels at zoom=1.0)
+        gl.uniform1f(this.pointSizeLocation, 2.0); // Base walker size
         gl.uniform4f(this.colorLocation, 0.0, 0.0, 0.0, 1.0); // Black particles
 
-        // Log uniforms just before drawing - Removed for clarity
-        // console.log(`Render uniforms: Res=(${gl.canvas.width}, ${gl.canvas.height}), Center=(${this.view.viewportX.toFixed(2)}, ${this.view.viewportY.toFixed(2)}), Zoom=${this.view.zoom.toFixed(2)}`);
-
-        // Draw walkers
-        const walkerCount = this.walkers.length;
+        // Draw walkers using the interpolated data in the buffer
         if (walkerCount > 0) {
             gl.enableVertexAttribArray(this.positionLocation);
-            gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer); // Buffer already bound and updated
             gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
             gl.drawArrays(gl.POINTS, 0, walkerCount);
-            // console.log(`Drawing ${walkerCount} walkers.`);
+            // console.log(`Drawing ${walkerCount} interpolated walkers.`);
         }
 
         // --- Loop ---
@@ -384,12 +459,11 @@ try {
                 }
                 
                 if (worldState && Array.isArray(worldState.entities)) {
-                    // Pass only position data to renderer
-                    const walkerPositions = worldState.entities.map(e => ({ x: e.x, y: e.y }));
-                    renderer.updateWalkers(walkerPositions);
-                    
+                    // Pass the full parsed state to the renderer
+                    renderer.updateSimulationState(worldState);
+
                     // Optionally show received data count in console
-                    // console.log(`Received ${worldState.entities.length} particles, frame: ${worldState.frame}`);
+                    // console.log(`Received state for ${worldState.entities.length} particles, frame: ${worldState.frame}, timestamp: ${worldState.timestamp}`);
                 } else {
                     console.warn('Received unexpected data format:', worldState);
                 }
@@ -407,7 +481,10 @@ try {
         socket.onclose = () => {
             console.log('WebSocket connection closed. Attempting to reconnect...');
             statusSpan.textContent = 'Disconnected';
-            renderer.updateWalkers([]); // Clear walkers on disconnect
+            // Clear renderer state on disconnect
+            renderer.previousState = null;
+            renderer.latestState = null;
+            renderer.updateSimulationState({ timestamp: 0, entities: [] }); // Clear display
             setTimeout(connectWebSocket, 5000); // Reconnect logic
         };
     }

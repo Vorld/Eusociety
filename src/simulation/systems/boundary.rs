@@ -1,9 +1,21 @@
+//! Contains the Bevy system for handling particle interactions with world boundaries.
+
 use bevy_ecs::prelude::*;
 use crate::config::BoundaryBehavior;
 use crate::simulation::components::{Position, Velocity};
 use crate::simulation::resources::SimulationConfigResource;
 
-/// System for handling particles that reach world boundaries
+/// Bevy system that enforces world boundary behavior for particles.
+///
+/// Reads the `BoundaryBehavior` from the `SimulationConfigResource` and applies
+/// either `Wrap` (teleporting to the opposite side) or `Bounce` (reversing velocity)
+/// logic to particles that have moved outside the defined world dimensions.
+/// Uses parallel iteration (`par_iter_mut`) for efficiency.
+///
+/// # Arguments
+///
+/// * `query` - A Bevy query to access mutable `Position` and `Velocity` components of particles.
+/// * `simulation_config` - The resource containing simulation configuration, including world dimensions and boundary behavior.
 pub fn handle_boundaries(
     mut query: Query<(&mut Position, &mut Velocity)>,
     simulation_config: Res<SimulationConfigResource>,

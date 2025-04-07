@@ -1,88 +1,116 @@
+//! Defines traits and implementations for serializing simulation data into byte streams.
+//!
+//! This module provides:
+//! - The `Serializer` trait for defining different serialization methods.
+//! - Concrete implementations: `JsonSerializer`, `BinarySerializer`, `NullSerializer`.
+//! - An `OptimizedBinarySerializer` that can incorporate delta compression and parallel processing.
+//! - Helper traits (`SerializerClone`, `SerializeObject`) and error types (`SerializationError`).
+
 use serde::Serialize;
 use thiserror::Error;
-use std::collections::HashMap;
 use rayon::prelude::*;
-use std::sync::{Arc, Mutex};
 
-/// Error types for serialization operations
+// Import DeltaCompressor from the delta_compression module
+use super::delta_compression::DeltaCompressor; 
+
+/// Error types that can occur during serialization.
 #[derive(Error, Debug)]
 pub enum SerializationError {
+    /// Error during JSON serialization (from `serde_json`).
     #[error("JSON serialization error: {0}")]
     JsonError(#[from] serde_json::Error),
-    
+    /// Error during binary serialization (from `bincode`).
     #[error("Binary serialization error: {0}")]
     BinaryError(#[from] bincode::Error),
-    
+    /// Custom error during parallel serialization logic.
     #[error("Parallel serialization error: {0}")]
     ParallelError(String),
 }
 
-// /// Enum to represent different serializer types (Currently unused)
-// #[derive(Debug)]
-// pub enum SerializerType {
-//     Json,
-//     Binary,
-// }
+// --- Core Serializer Traits ---
 
-/// Base serializer trait without generics for object-safety
+// Note: Original SerializerType enum removed as SerializerConfig handles type definition.
+/// Base trait for serializers.
+///
+/// Defines the core function `serialize_to_bytes` which takes a trait object
+/// implementing `SerializeObject` and returns its byte representation.
+/// Requires `Send + Sync + SerializerClone` for thread safety and clonability
+/// when used as a trait object (`Box<dyn Serializer>`).
 pub trait Serializer: Send + Sync + SerializerClone {
+    /// Serializes the given data object into a byte vector.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A trait object implementing `SerializeObject`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if the underlying serialization process fails.
     fn serialize_to_bytes(&self, data: &dyn SerializeObject) -> Result<Vec<u8>, SerializationError>;
 }
 
+/// Enables cloning of `Box<dyn Serializer>`.
 impl Clone for Box<dyn Serializer> {
     fn clone(&self) -> Self {
-        self.clone_serializer()
+        self.clone_serializer() // Delegates to the object-safe clone method
     }
 }
 
-/// Null serializer implementation (no-op)
+/// A serializer that performs no operation and returns an empty byte vector.
+/// Useful for disabling serialization/transport entirely via configuration.
 #[derive(Clone)]
 pub struct NullSerializer;
 
 impl Serializer for NullSerializer {
-    // Ensure this signature exactly matches the trait definition
+    /// Returns `Ok(Vec::new())` immediately.
     fn serialize_to_bytes(&self, _data: &dyn SerializeObject) -> Result<Vec<u8>, SerializationError> {
-        // Return an empty Vec as there's nothing to serialize
         Ok(Vec::new())
     }
 }
 
-/// Helper trait to make Serializer cloneable via object-safe methods
+/// Helper trait providing an object-safe cloning method for `Serializer`.
+/// This is necessary to allow `Box<dyn Serializer>` to be cloneable.
 pub trait SerializerClone {
+    /// Creates a boxed clone of the `Serializer`.
     fn clone_serializer(&self) -> Box<dyn Serializer>;
 }
 
-// Removed the generic implementation to avoid conflicts.
-// Explicit implementations are provided below for each Serializer type.
-
+// Implement `SerializerClone` for each concrete serializer type.
 impl SerializerClone for NullSerializer {
     fn clone_serializer(&self) -> Box<dyn Serializer> {
         Box::new(self.clone())
     }
 }
 
-/// Trait for objects that can be serialized
+/// Trait implemented by data structures that can be serialized to JSON or binary formats.
+/// This allows the `Serializer` trait to work with different concrete types via dynamic dispatch.
 pub trait SerializeObject {
+    /// Serializes the object to a JSON byte vector.
     fn to_json(&self) -> Result<Vec<u8>, SerializationError>;
+    /// Serializes the object to a binary byte vector using `bincode`.
     fn to_binary(&self) -> Result<Vec<u8>, SerializationError>;
 }
 
-// Implement SerializeObject for any type that implements Serialize
+/// Blanket implementation of `SerializeObject` for any type `T` that implements `serde::Serialize`.
 impl<T: Serialize + ?Sized> SerializeObject for T {
+    /// Uses `serde_json::to_vec` for serialization.
     fn to_json(&self) -> Result<Vec<u8>, SerializationError> {
         serde_json::to_vec(self).map_err(SerializationError::JsonError)
     }
-    
+    /// Uses `bincode::serialize` for serialization.
     fn to_binary(&self) -> Result<Vec<u8>, SerializationError> {
         bincode::serialize(self).map_err(SerializationError::BinaryError)
     }
 }
 
-/// JSON serializer implementation
+// --- Concrete Serializer Implementations ---
+
+/// Serializer implementation using `serde_json`.
 #[derive(Clone)]
 pub struct JsonSerializer;
 
 impl Serializer for JsonSerializer {
+    /// Serializes the data object to JSON bytes using its `to_json` method.
     fn serialize_to_bytes(&self, data: &dyn SerializeObject) -> Result<Vec<u8>, SerializationError> {
         data.to_json()
     }
@@ -94,11 +122,12 @@ impl SerializerClone for JsonSerializer {
     }
 }
 
-/// Binary serializer implementation using bincode
+/// Serializer implementation using `bincode`.
 #[derive(Clone)]
 pub struct BinarySerializer;
 
 impl Serializer for BinarySerializer {
+    /// Serializes the data object to binary bytes using its `to_binary` method.
     fn serialize_to_bytes(&self, data: &dyn SerializeObject) -> Result<Vec<u8>, SerializationError> {
         data.to_binary()
     }
@@ -110,291 +139,197 @@ impl SerializerClone for BinarySerializer {
     }
 }
 
-/// Optimized binary serializer with delta compression
-#[derive(Clone)]
-pub struct DeltaCompressor {
-    /// Previous positions of entities
-    last_positions: HashMap<u32, [f32; 2]>,
-    /// Threshold for considering an entity as moved (squared distance)
-    threshold_squared: f32,
-    /// Metrics for monitoring delta compression effectiveness
-    metrics: DeltaCompressionMetrics,
-}
+// --- Delta Compression Logic Moved to delta_compression.rs ---
 
-/// Metrics to track delta compression effectiveness
-#[derive(Clone, Debug, Default)]
-pub struct DeltaCompressionMetrics {
-    /// Total particles processed (cumulative)
-    pub total_particles_processed: usize,
-    /// Total particles sent after filtering (cumulative)
-    pub total_particles_sent: usize,
-    /// Particles processed in the last frame
-    pub last_frame_particles_processed: usize,
-    /// Particles sent in the last frame
-    pub last_frame_particles_sent: usize,
-    /// Average data reduction percentage over time
-    pub avg_reduction_pct: f32,
-}
-
-impl DeltaCompressor {
-    /// Create a new delta compressor with the specified movement threshold
-    pub fn new(threshold: f32) -> Self {
-        Self {
-            last_positions: HashMap::new(),
-            threshold_squared: threshold * threshold,
-            metrics: DeltaCompressionMetrics::default(),
-        }
-    }
-    
-    /// Filter simulation state to include only entities that have moved significantly
-    pub fn filter_state<T>(&mut self, state: &super::SimulationState) -> super::SimulationState 
-    where T: Clone
-    {
-        let original_count = state.particles.len();
-        
-        // Create a new state with only particles that have moved
-        let mut filtered_particles = Vec::new();
-        
-        for particle in &state.particles {
-            let entity_id = particle.id; // Already u32
-            let current_pos = [particle.x, particle.y]; // Create array for comparison
-            
-            // Check if the entity has moved significantly
-            let should_include = match self.last_positions.get(&entity_id) {
-                Some(last_pos) => {
-                    let dx = current_pos[0] - last_pos[0];
-                    let dy = current_pos[1] - last_pos[1];
-                    let dist_squared = dx*dx + dy*dy;
-                    
-                    // Include if moved more than threshold
-                    dist_squared > self.threshold_squared
-                },
-                None => true, // Always include new entities
-            };
-            
-            if should_include {
-                // Update the last known position
-                self.last_positions.insert(entity_id, current_pos);
-                filtered_particles.push(particle.clone());
-            }
-        }
-
-        // Update metrics
-        let filtered_count = filtered_particles.len();
-        let reduction_pct = if original_count > 0 {
-            100.0 * (1.0 - (filtered_count as f32 / original_count as f32))
-        } else {
-            0.0
-        };
-        
-        self.metrics.total_particles_processed += original_count;
-        self.metrics.total_particles_sent += filtered_count;
-        self.metrics.last_frame_particles_processed = original_count;
-        self.metrics.last_frame_particles_sent = filtered_count;
-        
-        // Update running average
-        if self.metrics.total_particles_processed > 0 {
-            self.metrics.avg_reduction_pct = 100.0 * (1.0 - (self.metrics.total_particles_sent as f32 / 
-                                                      self.metrics.total_particles_processed as f32));
-        }
-        
-        // Log metrics periodically (every 60 frames = ~1 second at 60 fps)
-        if state.frame % 60 == 0 {
-            tracing::info!(
-                frame = state.frame,
-                original_particles = original_count,
-                filtered_particles = filtered_count,
-                reduction_pct = format!("{:.2}%", reduction_pct),
-                avg_reduction = format!("{:.2}%", self.metrics.avg_reduction_pct),
-                threshold = (self.threshold_squared as f32).sqrt(),
-                "Delta compression metrics"
-            );
-        }
-        
-        // Create a new state with only the filtered particles
-        super::SimulationState {
-            frame: state.frame,
-            timestamp: state.timestamp,
-            particles: filtered_particles,
-        }
-    }
-    
-    /// Get the current delta compression metrics
-    pub fn metrics(&self) -> &DeltaCompressionMetrics {
-        &self.metrics
-    }
-    
-    /// Get the movement threshold
-    pub fn threshold(&self) -> f32 {
-        self.threshold_squared.sqrt()
-    }
-    
-    /// Set a new movement threshold
-    pub fn set_threshold(&mut self, threshold: f32) -> &mut Self {
-        self.threshold_squared = threshold * threshold;
-        self
-    }
-}
-
-/// Optimized binary serializer with parallel processing capabilities
+/// An optimized binary serializer primarily intended for `SimulationState`.
+///
+/// This serializer can optionally:
+/// - Use a `DeltaCompressor` to filter out unchanged particle data before serialization.
+/// - Employ parallel processing (`rayon`) for serializing large numbers of particles
+///   while maintaining compatibility with the expected `bincode` format.
 #[derive(Clone)]
 pub struct OptimizedBinarySerializer {
-    /// Delta compressor for filtering unchanged entities
+    /// Optional delta compressor instance. If `Some`, `filter_state` is called before serialization.
     delta_compressor: Option<DeltaCompressor>,
-    /// Determines whether to use parallel serialization for large particle counts
+    /// Flag to enable/disable parallel serialization.
     use_parallel: bool,
-    /// Threshold for switching to parallel serialization
+    /// Minimum number of particles required to trigger parallel serialization logic.
     parallel_threshold: usize,
-    /// Number of threads to use for serialization (0 = auto)
+    /// Number of threads hint for Rayon (0 = automatic).
     thread_count: usize,
 }
 
 impl OptimizedBinarySerializer {
-    /// Create a new optimized binary serializer
+    /// Creates a new `OptimizedBinarySerializer`.
+    ///
+    /// # Arguments
+    ///
+    /// * `delta_threshold` - If `Some(threshold)`, enables delta compression with the given
+    ///   movement threshold. If `None`, delta compression is disabled.
     pub fn new(delta_threshold: Option<f32>) -> Self {
-        // Create delta compressor if threshold provided
+        // Create delta compressor if a threshold is provided
         let delta_compressor = delta_threshold.map(DeltaCompressor::new);
             
         Self { 
             delta_compressor,
-            use_parallel: true,
-            parallel_threshold: 50000, // Use parallel serialization for more than 50K particles
-            thread_count: 0,           // 0 means use Rayon's default thread pool
+            use_parallel: true, // Default to enabled
+            parallel_threshold: 50000, // Default threshold
+            thread_count: 0,           // Default thread count (auto)
         }
     }
     
-    /// Serialize simulation state with optimizations
+    /// Serializes a `SimulationState` object, applying optimizations.
+    ///
+    /// This method first applies delta compression (if enabled), then chooses between
+    /// sequential `bincode` serialization or a custom parallel serialization implementation
+    /// based on the number of particles and the `use_parallel` flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - The `SimulationState` to serialize.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if any serialization step fails.
     pub fn serialize_state(&mut self, state: &super::SimulationState) -> Result<Vec<u8>, SerializationError> {
-        // Apply delta compression if enabled
+        // 1. Apply delta compression if enabled
         let final_state = if let Some(compressor) = &mut self.delta_compressor {
-            compressor.filter_state::<super::ParticleState>(state)
+            compressor.filter_state(state)
         } else {
-            state.clone()
+            state.clone() // Clone if no delta compression needed
         };
         
-        // Check if we should use parallel serialization
+        // 2. Choose serialization strategy based on particle count and config
         if self.use_parallel && final_state.particles.len() >= self.parallel_threshold {
+            // Use parallel serialization for large states
             self.serialize_state_parallel_compatible(&final_state)
         } else {
-            // Serialize using standard bincode serialization
+            // Use standard sequential bincode serialization for smaller states
             bincode::serialize(&final_state)
                 .map_err(SerializationError::BinaryError)
         }
     }
 
-    /// Serialize simulation state using parallel processing while maintaining
-    /// binary compatibility with the frontend parser
+    /// Internal helper for parallel serialization of `SimulationState`.
+    ///
+    /// Serializes the header (frame, timestamp, particle count) sequentially,
+    /// then serializes particle data in parallel chunks using Rayon, and finally
+    /// concatenates the results. Designed to produce output compatible with
+    /// standard `bincode` deserialization on the receiving end.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - The `SimulationState` (potentially delta-compressed) to serialize.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SerializationError` if header or particle chunk serialization fails.
     fn serialize_state_parallel_compatible(&self, state: &super::SimulationState) -> Result<Vec<u8>, SerializationError> {
-        // Calculate the size of the final binary buffer
-        // Note: This assumes Bincode's default serialization format
-        // Frame (u64) + Timestamp (f64) + Particle count (length prefix, u64) + particles
-        let particle_size = std::mem::size_of::<u32>() + // id
-                          std::mem::size_of::<f32>() * 2; // x, y
-        
-        let header_size = std::mem::size_of::<u64>() + // frame
-                         std::mem::size_of::<f64>() + // timestamp
-                         std::mem::size_of::<u64>(); // array length prefix
-        
-        // let total_size = header_size + (state.particles.len() * particle_size); // Size calculation might be less precise now
+        // Estimate buffer size (can be approximate)
+        let particle_size = std::mem::size_of::<u32>() + std::mem::size_of::<f32>() * 2; // id, x, y
+        let header_size = std::mem::size_of::<u64>() * 2 + std::mem::size_of::<f64>(); // frame, count, timestamp
+        let estimated_capacity = header_size + state.particles.len() * particle_size;
 
-        // --- Refactored Parallel Serialization ---
+        // --- Parallel Serialization Steps ---
 
-        // 1. Serialize header sequentially first
-        let mut final_buffer = Vec::with_capacity(header_size + state.particles.len() * particle_size); // Pre-allocate roughly
-
-        // Frame (u64)
-        {
-            let frame_bytes = bincode::serialize(&state.frame)
-                .map_err(SerializationError::BinaryError)?;
-            final_buffer.extend_from_slice(&frame_bytes);
-
-            // Timestamp (f64)
-            let timestamp_bytes = bincode::serialize(&state.timestamp)
-                .map_err(SerializationError::BinaryError)?;
-            final_buffer.extend_from_slice(&timestamp_bytes);
-
-            // Particle count as u64 (for bincode length prefix)
-            let count_bytes = bincode::serialize(&(state.particles.len() as u64))
-                .map_err(SerializationError::BinaryError)?;
-            final_buffer.extend_from_slice(&count_bytes);
+        // 1. Serialize header (frame, timestamp, particle count) sequentially
+        let mut final_buffer = Vec::with_capacity(estimated_capacity);
+        { // Scope to borrow final_buffer mutably
+            // Frame
+            final_buffer.extend_from_slice(&bincode::serialize(&state.frame)?);
+            // Timestamp
+            final_buffer.extend_from_slice(&bincode::serialize(&state.timestamp)?);
+            // Particle count (as u64 for bincode Vec length prefix)
+            final_buffer.extend_from_slice(&bincode::serialize(&(state.particles.len() as u64))?);
         }
 
+        // 2. Serialize particle data in parallel chunks
+        // Build the Rayon thread pool, configuring the number of threads if specified
+        let pool = {
+            let builder = rayon::ThreadPoolBuilder::new();
+            if self.thread_count > 0 {
+                builder.num_threads(self.thread_count) // Consumes builder, returns new one
+            } else {
+                builder // Use the original builder
+            }
+            .build() // Build from the final builder instance
+            .map_err(|e| SerializationError::ParallelError(format!("Failed to build Rayon pool: {}", e)))?
+        };
 
-        // 2. Process particles in parallel, collecting byte chunks
-        let particle_chunks: Result<Vec<Vec<u8>>, SerializationError> = state.particles
-            .par_chunks(self.parallel_threshold) // Use configured threshold or adjust chunking strategy
-            .map(|particle_chunk| {
-                // Serialize this chunk of particles into a local buffer
-                let mut chunk_buffer = Vec::with_capacity(particle_chunk.len() * particle_size);
-                for particle in particle_chunk {
-                    // Serialize the whole particle struct (or fields individually if needed)
-                    // Using individual fields here to maintain exact compatibility
-                    // ID (u32)
-                    chunk_buffer.extend_from_slice(&bincode::serialize(&particle.id)?);
-                    // X position (f32)
-                    chunk_buffer.extend_from_slice(&bincode::serialize(&particle.x)?);
-                    // Y position (f32)
-                    chunk_buffer.extend_from_slice(&bincode::serialize(&particle.y)?);
-                }
-                Ok(chunk_buffer)
-            })
-            .collect(); // Collect results from parallel threads
+        // Install the pool context for parallel iteration
+        let particle_chunks: Result<Vec<Vec<u8>>, SerializationError> = pool.install(|| {
+            state.particles
+                .par_chunks(self.parallel_threshold.max(1)) // Ensure chunk size is at least 1
+                .map(|particle_chunk| {
+                    // Serialize each chunk into its own buffer
+                    let mut chunk_buffer = Vec::with_capacity(particle_chunk.len() * particle_size);
+                    for particle in particle_chunk {
+                        // Serialize fields individually for compatibility
+                        chunk_buffer.extend_from_slice(&bincode::serialize(&particle.id)?);
+                        chunk_buffer.extend_from_slice(&bincode::serialize(&particle.x)?);
+                        chunk_buffer.extend_from_slice(&bincode::serialize(&particle.y)?);
+                    }
+                    Ok(chunk_buffer)
+                })
+                .collect() // Collect results within the Rayon pool context
+        });
 
-        // Handle potential errors during parallel serialization
+        // Check for errors during parallel processing
         let collected_chunks = particle_chunks?;
 
-        // 3. Concatenate the collected chunks into the final buffer
+        // 3. Concatenate header and parallel chunks
         for chunk in collected_chunks {
             final_buffer.extend_from_slice(&chunk);
         }
 
         Ok(final_buffer)
-        // --- End Refactored Parallel Serialization ---
+        // --- End Parallel Serialization Steps ---
     }
     
-    /// Check if delta compression is enabled
+    /// Returns `true` if delta compression is configured for this serializer.
     pub fn has_delta_compression(&self) -> bool {
         self.delta_compressor.is_some()
     }
     
-    /// Enable or disable parallel serialization
+    /// Enables or disables parallel serialization.
     pub fn set_parallel(&mut self, enabled: bool) -> &mut Self {
         self.use_parallel = enabled;
         self
     }
     
-    /// Set the threshold for parallel serialization
+    /// Sets the minimum number of particles required to trigger parallel serialization.
     pub fn set_parallel_threshold(&mut self, threshold: usize) -> &mut Self {
         self.parallel_threshold = threshold;
         self
     }
     
-    /// Set the number of threads to use (0 = auto)
+    /// Sets the number of threads for Rayon to use (0 means automatic).
     pub fn set_thread_count(&mut self, count: usize) -> &mut Self {
         self.thread_count = count;
         self
     }
     
-    /// Get the current parallel serialization threshold
+    /// Gets the current parallel serialization threshold.
     pub fn parallel_threshold(&self) -> usize {
         self.parallel_threshold
     }
     
-    /// Get the current thread count setting
+    /// Gets the current thread count setting (0 means automatic).
     pub fn thread_count(&self) -> usize {
         self.thread_count
     }
     
-    /// Check if parallel serialization is enabled
+    /// Returns `true` if parallel serialization is enabled.
     pub fn is_parallel(&self) -> bool {
         self.use_parallel
     }
 }
 
 impl Serializer for OptimizedBinarySerializer {
+    /// Serializes arbitrary `SerializeObject` data using standard `bincode`.
+    /// Note: This does *not* use the delta compression or parallel optimizations,
+    /// as those are specific to the `SimulationState` structure in `serialize_state`.
     fn serialize_to_bytes(&self, data: &dyn SerializeObject) -> Result<Vec<u8>, SerializationError> {
-        // For now, fall back to standard binary serialization
-        // The specialized serialize_state method should be used for SimulationState
         data.to_binary()
     }
 }

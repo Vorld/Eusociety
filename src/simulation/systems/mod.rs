@@ -1,41 +1,26 @@
-use bevy_ecs::prelude::*;
-use tracing::error;
+//! Organizes and re-exports the various Bevy ECS systems used in the simulation.
+//!
+//! Systems contain the core logic that operates on components and resources
+//! each frame (or during startup).
 
-use crate::simulation::resources::CurrentSimulationState;
-use crate::transport::TransportController;
+// Removed unused imports: bevy_ecs::prelude::*, tracing::error, CurrentSimulationState, TransportController
+// These were likely needed by the inline module that was removed.
 
+// Declare sub-modules for different system categories
 pub mod movement;
 pub mod randomization;
 pub mod boundary;
 pub mod setup;
-pub mod state_export; // Added state_export
+pub mod state_export; 
+pub mod transport_integration; 
 
-// Re-export system functions for easier access
+// Re-export the primary system function from each module for convenient use in schedule setup.
 pub use movement::move_particles;
 pub use randomization::randomize_velocities;
 pub use boundary::handle_boundaries;
 pub use setup::spawn_particles;
 // Removed: pub use transport::{extract_and_send, flush_transport, SimulationTimer, SimulationTransport};
 pub use state_export::update_current_simulation_state_resource; // Added state_export system
-pub use self::transport_integration::send_simulation_data_system; // Export the new system
+pub use transport_integration::send_simulation_data_system; // Export from the new module file
 
-// --- New module for transport system ---
-mod transport_integration {
-    use bevy_ecs::prelude::*;
-    use tracing::error;
-    use crate::simulation::resources::CurrentSimulationState;
-    use crate::transport::TransportController;
-
-    /// System to send the current simulation state using the TransportController resource.
-    /// This should run after `update_current_simulation_state_resource`.
-    pub fn send_simulation_data_system(
-        state: Res<CurrentSimulationState>,
-        mut controller: ResMut<TransportController>, // Use ResMut to access the controller
-    ) {
-        // Send the state by reference, avoiding the clone
-        if let Err(e) = controller.send_simulation_state(&state.0) {
-            error!("Failed to send simulation state via Bevy system: {}", e);
-            // Consider adding more robust error handling if needed
-        }
-    }
-}
+// Removed the inline transport_integration module

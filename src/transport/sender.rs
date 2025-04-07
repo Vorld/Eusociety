@@ -1,316 +1,169 @@
+//! Defines traits and implementations for sending serialized simulation data.
+//!
+//! This module provides:
+//! - The `Sender` trait defining the interface for sending byte data.
+//! - Concrete implementations: `FileSender`, `NullSender`.
+//! - (Note: `WebSocketSender` is now in `websocket.rs`).
+//! - Helper traits (`SenderClone`) and error types (`TransportError`).
+
 use std::fs::File;
 use std::io::{Write, Error as IoError};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use std::net::SocketAddr;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::runtime::{Handle, Runtime};
-use tokio::sync::mpsc;
-use tokio_tungstenite::accept_async;
-use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{info, error}; // Ensure tracing macros are imported (removed warn)
-use std::thread;
-use std::time::Duration;
 
+// Import WebSocketSender from the parent module (transport::mod.rs re-exports it)
+use super::WebSocketSender; 
 use super::serializer::SerializationError;
 
-/// Error types for transport operations
+/// Error types that can occur during data transport (sending).
 #[derive(Error, Debug)]
 pub enum TransportError {
+    /// An I/O error occurred (e.g., writing to a file).
     #[error("I/O error: {0}")]
     IoError(#[from] IoError),
-
+    /// An error occurred during serialization before sending.
     #[error("Serialization error: {0}")]
     SerializationError(#[from] SerializationError),
-
+    /// A WebSocket-specific error occurred (e.g., connection failure).
     #[error("WebSocket error: {0}")]
     WebSocketError(String),
-
+    /// An error related to the Tokio runtime occurred (e.g., spawning tasks).
     #[error("Runtime error: {0}")]
     RuntimeError(String),
-
+    /// An error occurred due to invalid transport configuration.
     #[error("Configuration error: {0}")]
     ConfigurationError(String),
 }
 
-/// Trait for sending serialized data
+/// Base trait for sending serialized data.
+///
+/// Defines methods for sending byte slices and flushing buffers.
+/// Requires `Send + Sync + SenderClone` for thread safety and clonability
+/// when used as a trait object (`Box<dyn Sender>`).
 pub trait Sender: Send + Sync + SenderClone {
+    /// Sends the provided byte slice to the destination.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The byte slice containing the serialized data to send.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if the send operation fails.
     fn send(&self, data: &[u8]) -> Result<(), TransportError>;
+
+    /// Flushes any internal buffers to ensure data is sent/written.
+    /// May be a no-op for some implementations (like WebSocket).
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError` if flushing fails.
     fn flush(&self) -> Result<(), TransportError>;
 
-    /// Try to downcast to WebSocketSender, return None if not a WebSocketSender
+    /// Attempts to downcast this sender to a `WebSocketSender`.
+    ///
+    /// Returns `Some(&WebSocketSender)` if the underlying type is `WebSocketSender`,
+    /// otherwise returns `None`. This is useful for accessing WebSocket-specific methods.
     fn as_websocket_sender(&self) -> Option<&WebSocketSender> {
-        None
+        // Default implementation returns None. WebSocketSender overrides this.
+        None 
     }
 }
 
+/// Enables cloning of `Box<dyn Sender>`.
 impl Clone for Box<dyn Sender> {
     fn clone(&self) -> Self {
-        self.clone_sender()
+        self.clone_sender() // Delegates to the object-safe clone method
     }
 }
 
-/// Helper trait to make Sender cloneable via object-safe methods
+/// Helper trait providing an object-safe cloning method for `Sender`.
+/// Necessary to allow `Box<dyn Sender>` to be cloneable.
 pub trait SenderClone {
+    /// Creates a boxed clone of the `Sender`.
     fn clone_sender(&self) -> Box<dyn Sender>;
 }
 
-// Removed the generic implementation to avoid conflicts.
-// Explicit implementations are provided below for each Sender type.
-
-/// File-based sender implementation
+// Implement `SenderClone` for each concrete sender type.
+/// Sender implementation that writes data to a file.
+///
+/// Each call to `send` appends the data followed by a newline character.
+/// Uses an `Arc<Mutex<File>>` for thread-safe access if cloned.
 #[derive(Clone)]
 pub struct FileSender {
-    _file_path: String, // Prefixed with _
+    /// The path to the output file (stored for potential debugging).
+    _file_path: String, 
+    /// Thread-safe handle to the output file.
     file: Arc<Mutex<File>>,
 }
 
 impl FileSender {
+    /// Creates a new `FileSender` that writes to the specified file path.
+    /// Creates the file if it doesn't exist, truncates it if it does.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_path` - The path to the output file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::IoError` if the file cannot be created or opened.
     pub fn new(file_path: &str) -> Result<Self, TransportError> {
-        let file = File::create(file_path)?;
+        let file = File::create(file_path)?; // Create/truncate the file
+        info!("Initialized FileSender for path: {}", file_path);
         Ok(Self {
-            _file_path: file_path.to_string(), // Use prefixed field name
+            _file_path: file_path.to_string(), 
             file: Arc::new(Mutex::new(file)),
         })
     }
 }
 
 impl Sender for FileSender {
+    /// Appends the data slice and a newline character to the file.
     fn send(&self, data: &[u8]) -> Result<(), TransportError> {
-        let mut file = self.file.lock().expect("Failed to lock file mutex");
-        file.write_all(data)?;
-        file.write_all(b"\n")?; // Add a newline for JSON readability
+        // Lock the mutex to get exclusive access to the file handle
+        let mut file_guard = self.file.lock().map_err(|_| TransportError::RuntimeError("File mutex poisoned".to_string()))?;
+        file_guard.write_all(data)?; // Write the data
+        file_guard.write_all(b"\n")?; // Append a newline
         Ok(())
     }
 
+    /// Flushes the file's internal buffer to ensure data is written to disk.
     fn flush(&self) -> Result<(), TransportError> {
-        let mut file = self.file.lock().expect("Failed to lock file mutex");
-        file.flush()?;
+        let mut file_guard = self.file.lock().map_err(|_| TransportError::RuntimeError("File mutex poisoned".to_string()))?;
+        file_guard.flush()?;
         Ok(())
     }
 }
 
 impl SenderClone for FileSender {
     fn clone_sender(&self) -> Box<dyn Sender> {
-        Box::new(self.clone())
+        Box::new(self.clone()) // Simply clone the struct (Arc makes this cheap)
     }
 }
 
-/// Null sender implementation (no-op)
+/// A sender implementation that does nothing.
+/// Useful for disabling data transport via configuration.
 #[derive(Clone)]
 pub struct NullSender;
 
 impl Sender for NullSender {
+    /// Performs no operation.
     fn send(&self, _data: &[u8]) -> Result<(), TransportError> {
-        // Do nothing
-        Ok(())
+        Ok(()) // Always succeeds, does nothing
     }
 
+    /// Performs no operation.
     fn flush(&self) -> Result<(), TransportError> {
-        // Do nothing
-        Ok(())
+        Ok(()) // Always succeeds, does nothing
     }
 }
 
-// Explicitly implement SenderClone for NullSender
 impl SenderClone for NullSender {
     fn clone_sender(&self) -> Box<dyn Sender> {
         Box::new(self.clone())
     }
 }
 
-
-// /// Type alias for a WebSocket client connection (Currently unused)
-// type WebSocketSink = SplitSink<WebSocketStream<TcpStream>, Message>;
-
-/// WebSocket-based sender implementation
-#[derive(Clone)]
-pub struct WebSocketSender {
-    clients: Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<Vec<u8>>>>>>, // Use Arc<Vec<u8>>
-    _runtime: Option<Arc<Runtime>>,
-    _address: String, // Prefixed with _
-}
-
-impl WebSocketSender {
-    /// Create a new WebSocket sender that listens on the specified address
-    pub fn new(address: &str) -> Result<Self, TransportError> {
-        // Create a channel for communication between the WebSocket server and the sender
-        let clients = Arc::new(Mutex::new(Vec::new()));
-        let clients_clone = Arc::clone(&clients);
-
-        // Try to create a runtime handle - if we're already in a tokio runtime, we'll use that
-        // otherwise we'll create our own
-        let runtime_handle = Handle::try_current();
-        let mut own_runtime = None;
-
-        let runtime_handle = match runtime_handle {
-            Ok(handle) => handle,
-            Err(_) => {
-                // Create a new runtime
-                let rt = Runtime::new()
-                    .map_err(|e| TransportError::RuntimeError(format!("Failed to create runtime: {}", e)))?;
-                let handle = rt.handle().clone();
-                own_runtime = Some(Arc::new(rt));
-                handle
-            }
-        };
-
-        let address_clone = address.to_string();
-
-        // Spawn the WebSocket server
-        runtime_handle.spawn(async move {
-            // Parse the socket address
-            let socket_addr: SocketAddr = match address_clone.parse() {
-                Ok(addr) => addr,
-                Err(err) => {
-                    error!("Failed to parse address: {}", err); // Use error!
-                    return;
-                }
-            };
-
-            // Create the TCP listener
-            let listener = match TcpListener::bind(&socket_addr).await {
-                Ok(listener) => listener,
-                Err(err) => {
-                    error!("Failed to bind to address: {}", err); // Use error!
-                    return;
-                }
-            };
-
-            info!("WebSocket server listening on: {}", socket_addr); // Use info!
-
-            // Accept connections
-            while let Ok((stream, addr)) = listener.accept().await {
-                info!("New WebSocket connection from: {}", addr); // Use info!
-
-                let clients = Arc::clone(&clients_clone);
-
-                // Spawn a task to handle the connection
-                tokio::spawn(async move {
-                    match handle_connection(stream, clients).await {
-                        Ok(_) => info!("WebSocket connection to {} closed", addr), // Use info!
-                        Err(e) => error!("Error handling WebSocket connection: {}", e), // Use error!
-                    }
-                });
-            }
-        });
-
-        // If we created our own runtime, we need to start it
-        if let Some(rt) = &own_runtime {
-            let rt_handle = rt.handle().clone();
-            thread::spawn(move || {
-                rt_handle.block_on(async {
-                    loop {
-                        tokio::time::sleep(Duration::from_secs(3600)).await;
-                    }
-                });
-            });
-        }
-
-        Ok(Self {
-            clients,
-            _runtime: own_runtime,
-            _address: address.to_string(), // Prefixed with _
-        })
-    }
-
-    /// Returns the number of connected clients
-    pub fn client_count(&self) -> usize {
-        self.clients.lock().expect("Failed to lock clients mutex").len()
-    }
-}
-
-impl SenderClone for WebSocketSender {
-    fn clone_sender(&self) -> Box<dyn Sender> {
-        Box::new(self.clone())
-    }
-}
-
-impl Sender for WebSocketSender {
-    fn send(&self, data: &[u8]) -> Result<(), TransportError> {
-        // Wrap the data in an Arc once
-        let data_arc = Arc::new(data.to_vec()); 
-        let mut clients = self.clients.lock().expect("Failed to lock clients mutex");
-
-        // Remove clients that encounter errors (they've disconnected)
-        clients.retain_mut(|client| {
-            // Send a clone of the Arc (cheap operation)
-            match client.send(Arc::clone(&data_arc)) { 
-                Ok(_) => true,
-                Err(_) => false, // Error sending, remove client
-            }
-        });
-
-        Ok(())
-    }
-
-    fn flush(&self) -> Result<(), TransportError> {
-        // WebSockets send immediately, no need to flush
-        Ok(())
-    }
-
-    fn as_websocket_sender(&self) -> Option<&WebSocketSender> {
-        Some(self)
-    }
-}
-
-/// Handle a WebSocket connection
-async fn handle_connection(
-    stream: TcpStream,
-    clients: Arc<Mutex<Vec<mpsc::UnboundedSender<Arc<Vec<u8>>>>>>, // Use Arc<Vec<u8>>
-) -> Result<(), TransportError> {
-    // Accept the WebSocket connection
-    let ws_stream = accept_async(stream)
-        .await
-        .map_err(|e| TransportError::WebSocketError(format!("Failed to accept WebSocket connection: {}", e)))?;
-
-    // Create a channel for sending data to this client
-    let (client_sender, mut client_receiver) = mpsc::unbounded_channel::<Arc<Vec<u8>>>(); // Use Arc<Vec<u8>>
-
-    // Split the WebSocket stream into sender and receiver parts
-    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-
-    // Add the client to our list
-    clients.lock().expect("Failed to lock clients mutex").push(client_sender);
-
-    // Spawn a task that forwards messages from the channel to the WebSocket
-    let send_task = tokio::spawn(async move {
-        // Receive Arc<Vec<u8>>
-        while let Some(data_arc) = client_receiver.recv().await { 
-            // Clone the underlying Vec<u8> from the Arc for sending
-            // Message::Binary expects Vec<u8>
-            let data_vec = data_arc.as_ref().clone(); 
-            if let Err(e) = ws_sender.send(Message::Binary(data_vec)).await {
-                error!("Error sending WebSocket message: {}", e); // Use error!
-                break;
-            }
-        }
-    });
-
-    // Process incoming WebSocket messages (for completeness)
-    let receive_task = tokio::spawn(async move {
-        while let Some(message) = ws_receiver.next().await {
-            match message {
-                Ok(msg) => {
-                    // Handle incoming messages if needed
-                    if msg.is_close() {
-                        break;
-                    }
-                },
-                Err(e) => {
-                    error!("Error receiving WebSocket message: {}", e); // Use error!
-                    break;
-                }
-            }
-        }
-    });
-
-    // Wait for either task to complete
-    let _ = tokio::select! {
-        _ = send_task => {},
-        _ = receive_task => {},
-    };
-
-    Ok(())
-}
+// --- WebSocket Sender Logic Moved to websocket.rs ---

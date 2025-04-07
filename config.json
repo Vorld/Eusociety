@@ -6,7 +6,7 @@
     "velocity_randomization_factor": 150,
     "velocity_damping_factor": 0.9999,
     "boundary_behavior": "Bounce",
-    "frame_rate": 165
+    "frame_rate": 30
   },
   "transport": {
     "delta_compression": false,
