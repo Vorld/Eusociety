@@ -56,55 +56,172 @@ const fragmentShaderSource = `#version 300 es
 `;
 
 // --- Binary Parser ---
-class BinaryParticleParser {
+// Renamed from BinaryParticleParser
+class BinaryStateParser {
     constructor() {
-        // Cache DataViews for better performance with large numbers of particles
-        this.cachedViews = new Map();
+        // Constants for AntState enum discriminants (assuming default bincode representation)
+        this.AntState = {
+            Foraging: 0,
+            ReturningToNest: 1,
+        };
     }
+
 
     parse(buffer) {
         const view = new DataView(buffer);
         let offset = 0;
+        // console.log(`Parsing buffer of size: ${buffer.byteLength}`); // Log buffer size
 
-        // Read frame number (u64)
-        const frameLow = view.getUint32(offset, true); offset += 4;
-        const frameHigh = view.getUint32(offset, true); offset += 4;
+        try {
+            // Read frame number (u64)
+            if (offset + 8 > buffer.byteLength) throw new Error("Buffer too small for frame");
+            const frameLow = view.getUint32(offset, true); offset += 4;
+            const frameHigh = view.getUint32(offset, true); offset += 4; // Read high bits of frame
 
-        // Read timestamp (f64)
-        const timestamp = view.getFloat64(offset, true); offset += 8;
+            // Read timestamp (f64) - 8 bytes
+            if (offset + 8 > buffer.byteLength) throw new Error("Buffer too small for timestamp");
+            const timestamp = view.getFloat64(offset, true); offset += 8;
+            // console.log(`Parsed header. Frame: ${frameLow}, Timestamp: ${timestamp.toFixed(3)}, Offset: ${offset}`); // Keep console clean for now
 
-        // Read particle count (u64, but we only need the lower 32 bits for JS)
-        // bincode serializes Vec length as u64 by default.
-        const particleCountLow = view.getUint32(offset, true); offset += 4;
-        const particleCountHigh = view.getUint32(offset, true); offset += 4; // Advance offset by 8 bytes total
-        const particleCount = particleCountLow; // Use lower 32 bits
+            // --- Read Ants Vec ---
+            // console.log(`Reading ant count at offset ${offset}`);
+            // Read Vec length (u64) - 8 bytes
+            if (offset + 8 > buffer.byteLength) throw new Error("Buffer too small for ant count");
+            const antCountLow = view.getUint32(offset, true); offset += 4;
+            const antCountHigh = view.getUint32(offset, true); offset += 4; // Read high bits of count
+            // JS numbers are safe up to 2^53, so antCountLow should be sufficient unless > 4 billion ants
+            if (antCountHigh !== 0) console.warn(`Ant count exceeds 2^32: ${antCountHigh}${antCountLow}`);
+            const antCount = antCountLow;
+            // console.log(`Expecting ${antCount} ants. Offset: ${offset}`);
+            const ants = [];
+            const antSize = 4 + 4 + 4 + 4; // id(u32) + x(f32) + y(f32) + state(u32 discriminant) = 16 bytes
+            if (offset + antCount * antSize > buffer.byteLength) throw new Error(`Buffer too small for ${antCount} ants`);
+            for (let i = 0; i < antCount; i++) {
+                // const startOffset = offset; // No longer needed with upfront size check
 
-        // Read particles
-        const particles = [];
-        for (let i = 0; i < particleCount; i++) {
-            // Read particle ID (usize/u32)
-            const id = view.getUint32(offset, true); offset += 4;
+                // Check if there is enough data to read a 32-bit unsigned integer
+                if (offset + 4 > buffer.byteLength) {
+                    throw new Error(`Buffer too small to read Uint32 at offset ${offset}. Buffer length: ${buffer.byteLength}`);
+                }
+                const id = view.getUint32(offset, true); offset += 4;
 
-            // Read x position (f32)
-            const x = view.getFloat32(offset, true); offset += 4;
-            // Read y position (f32)
-            const y = view.getFloat32(offset, true); offset += 4;
+                // Check if there is enough data to read a 32-bit float
+                if (offset + 4 > buffer.byteLength) {
+                    throw new Error(`Buffer too small to read Float32 at offset ${offset}. Buffer length: ${buffer.byteLength}`);
+                }
+                const x = view.getFloat32(offset, true); offset += 4;
 
-            // Add NaN check for debugging
-            if (isNaN(x) || isNaN(y)) {
-                console.warn(`Parsed NaN position for particle ID ${id}: (${x}, ${y})`);
-                // Skip adding this particle if its position is invalid
-                continue;
+                // Check if there is enough data to read a 32-bit float
+                if (offset + 4 > buffer.byteLength) {
+                    throw new Error(`Buffer too small to read Float32 at offset ${offset}. Buffer length: ${buffer.byteLength}`);
+                }
+                const y = view.getFloat32(offset, true); offset += 4;
+
+                // Check if there is enough data to read a 32-bit unsigned integer
+                if (offset + 4 > buffer.byteLength) {
+                    throw new Error(`Buffer too small to read Uint32 at offset ${offset}. Buffer length: ${buffer.byteLength}`);
+                }
+                const stateDiscriminant = view.getUint32(offset, true); offset += 4; // Read enum discriminant (u32)
+
+                let state;
+                switch (stateDiscriminant) {
+                    case this.AntState.Foraging: state = 'Foraging'; break;
+                    case this.AntState.ReturningToNest: state = 'ReturningToNest'; break;
+                    default: state = 'Unknown'; console.warn(`Unknown ant state discriminant: ${stateDiscriminant}`);
+                }
+
+                if (isNaN(x) || isNaN(y)) {
+                    console.warn(`Parsed NaN position for ant ID ${id}: (${x}, ${y})`);
+                    continue; // Skip invalid ant
+                }
+                ants.push({ id, x, y, state });
             }
 
-            particles.push({ id, x, y });
-        }
+            // --- Read Nest Option ---
+            // console.log(`Reading nest tag at offset ${offset}`);
+            // Read Option tag (u8) - 1 byte
+            if (offset + 1 > buffer.byteLength) throw new Error("Buffer too small for nest tag");
+            const nestTag = view.getUint8(offset, true); offset += 1;
+            let nest = null;
+            // console.log(`Nest tag: ${nestTag}. Offset: ${offset}`);
+            if (nestTag === 1) { // 1 = Some
+                 // Read NestExportState data - x(f32) + y(f32) = 8 bytes
+                 if (offset + 8 > buffer.byteLength) throw new Error("Buffer too small for nest data");
+                const x = view.getFloat32(offset, true); offset += 4;
+                const y = view.getFloat32(offset, true); offset += 4;
+                if (!isNaN(x) && !isNaN(y)) {
+                    nest = { x, y };
+                } else {
+                     console.warn(`Parsed NaN position for nest: (${x}, ${y})`);
+                }
+            }
 
-        return {
-            frame: frameLow, // We only use the low part since JS numbers are 53-bit safe
-            timestamp,
-            entities: particles
-        };
+            // --- Read FoodSources Vec ---
+            // console.log(`Reading food count at offset ${offset}`);
+            // Read Vec length (u64) - 8 bytes
+             if (offset + 8 > buffer.byteLength) throw new Error("Buffer too small for food count");
+            const foodCountLow = view.getUint32(offset, true); offset += 4;
+            const foodCountHigh = view.getUint32(offset, true); offset += 4; // Read high bits of count
+            if (foodCountHigh !== 0) console.warn(`Food source count exceeds 2^32: ${foodCountHigh}${foodCountLow}`);
+            const foodCount = foodCountLow;
+            // console.log(`Expecting ${foodCount} food sources. Offset: ${offset}`);
+            const foodSources = [];
+            const foodSize = 4 + 4 + 4; // id(u32) + x(f32) + y(f32) = 12 bytes
+            if (offset + foodCount * foodSize > buffer.byteLength) throw new Error(`Buffer too small for ${foodCount} food sources`);
+            for (let i = 0; i < foodCount; i++) {
+                 // const startOffset = offset; // No longer needed
+
+                // Check if there is enough data to read a 32-bit unsigned integer
+                if (offset + 4 > buffer.byteLength) {
+                    throw new Error(`Buffer too small to read Uint32 at offset ${offset}. Buffer length: ${buffer.byteLength}`);
+                }
+                const id = view.getUint32(offset, true); offset += 4; // FoodSourceExportState has id
+
+                // Check if there is enough data to read a 32-bit float
+                if (offset + 4 > buffer.byteLength) {
+                    throw new Error(`Buffer too small to read Float32 at offset ${offset}. Buffer length: ${buffer.byteLength}`);
+                }
+                const x = view.getFloat32(offset, true); offset += 4;
+
+                // Check if there is enough data to read a 32-bit float
+                if (offset + 4 > buffer.byteLength) {
+                    throw new Error(`Buffer too small to read Float32 at offset ${offset}. Buffer length: ${buffer.byteLength}`);
+                }
+                const y = view.getFloat32(offset, true); offset += 4;
+
+                if (isNaN(x) || isNaN(y)) {
+                    console.warn(`Parsed NaN position for food source ID ${id}: (${x}, ${y})`);
+                    continue; // Skip invalid food source
+                }
+                foodSources.push({ id, x, y });
+            }
+
+            // --- Final Logging & Check ---
+            // console.log(`Finished parsing. Offset: ${offset}, Buffer Length: ${buffer.byteLength}`); // Keep console clean
+            // Log results only if something seems wrong or for initial debugging
+            if (!nest || foodSources.length === 0) {
+                 console.log(`Parsed Result - Ants: ${ants.length}, Nest: ${nest ? 'Exists' : 'None'}, Food: ${foodSources.length}`);
+            }
+
+            // Check if we consumed the whole buffer (optional sanity check)
+            if (offset !== buffer.byteLength) {
+                console.warn(`Parser did not consume entire buffer. Offset: ${offset}, Length: ${buffer.byteLength}`);
+            }
+
+            return {
+                frame: frameLow, // Use low part
+                timestamp,
+                ants,
+                nest,
+                foodSources,
+            };
+
+        } catch (e) {
+            // Log the specific error and the offset where it occurred
+            console.error(`Error parsing binary data at offset ${offset}:`, e.message, e);
+            // Return a default/empty state on error to avoid crashing the renderer
+            return { frame: 0, timestamp: 0, ants: [], nest: null, foodSources: [] };
+        }
     }
 }
 
@@ -126,10 +243,10 @@ class EusocietyWebGLRenderer {
         this.view = {
             worldWidth: 10000.0, // From config
             worldHeight: 10000.0, // From config
-            viewportX: 500.0, // World coord at center X
-            viewportY: 500.0, // World coord at center Y
-            targetViewportX: 500.0,
-            targetViewportY: 500.0,
+            viewportX: 0.0, // World coord at center X (CHANGED TO 0,0 to match backend coordinate system)
+            viewportY: 0.0, // World coord at center Y (CHANGED TO 0,0 to match backend coordinate system)
+            targetViewportX: 0.0, // Also initialize to 0,0
+            targetViewportY: 0.0, // Also initialize to 0,0
             zoom: 1, 
             targetZoom: 1, 
             isDragging: false,
@@ -138,13 +255,14 @@ class EusocietyWebGLRenderer {
             lerpFactor: 0.2 // Smoothing factor
         };
 
-        // Data & State for Interpolation
-        this.previousState = null; // { timestamp: number, walkers: Map<number, {x: number, y: number}> }
-        this.latestState = null;   // { timestamp: number, walkers: Map<number, {x: number, y: number}> }
-        this.interpolatedPositions = new Float32Array(0); // Buffer for interpolated data
+        // Data & State - Removing interpolation
+        this.latestState = null;   // Latest state received from backend
+        this.antPositions = new Float32Array(0); // Buffer for ant data
+        this.nestPosition = new Float32Array(2); // Buffer for nest position
+        this.foodSourcePositions = new Float32Array(0); // Buffer for food source positions
 
         // Timing
-        this.lastRenderTime = 0; // Renamed from lastFrameTime for clarity
+        this.lastRenderTime = 0;
         this.frameCount = 0;
         this.fps = 0;
         this.lastFpsUpdate = 0;
@@ -182,7 +300,10 @@ class EusocietyWebGLRenderer {
         }
 
         // Buffer
-        this.walkerBuffer = gl.createBuffer();
+        // Buffers
+        this.antBuffer = gl.createBuffer();
+        this.nestBuffer = gl.createBuffer();
+        this.foodBuffer = gl.createBuffer();
 
         // GL Settings
         gl.useProgram(this.program);
@@ -228,28 +349,98 @@ class EusocietyWebGLRenderer {
 
     // Method to update the simulation state received from the backend
     updateSimulationState(newState) {
-        // Shift latest to previous
-        this.previousState = this.latestState;
-        // Store the new state, converting array to Map using particle ID
-        const walkerMap = new Map();
-        newState.entities.forEach(p => {
-            // Ensure positions are valid numbers before adding
-            if (!isNaN(p.x) && !isNaN(p.y)) {
-                walkerMap.set(p.id, { x: p.x, y: p.y });
+        // No longer storing previous state for interpolation
+        
+        // Store the new state, converting arrays to Maps using IDs
+        const antMap = new Map();
+        newState.ants.forEach(a => {
+            if (!isNaN(a.x) && !isNaN(a.y)) {
+                antMap.set(a.id, { x: a.x, y: a.y, state: a.state });
             } else {
-                 console.warn(`Received invalid position for particle ID ${p.id}: (${p.x}, ${p.y}). Skipping.`);
+                console.warn(`Received invalid position for ant ID ${a.id}. Skipping.`);
             }
         });
+
+        const foodMap = new Map();
+        newState.foodSources.forEach(f => {
+            if (!isNaN(f.x) && !isNaN(f.y)) {
+                foodMap.set(f.id, { x: f.x, y: f.y });
+            } else {
+                console.warn(`Received invalid position for food source ID ${f.id}. Skipping.`);
+            }
+        });
+
         this.latestState = {
-            timestamp: newState.timestamp, // Use backend timestamp
-            walkers: walkerMap
+            timestamp: newState.timestamp,
+            ants: antMap,
+            nest: newState.nest,
+            foodSources: foodMap
         };
 
         // Update walker count display
-        walkerCountSpan.textContent = this.latestState.walkers.size;
+        walkerCountSpan.textContent = this.latestState.ants.size;
 
-        // Don't update the GPU buffer here directly anymore.
-        // It will be updated in the render loop with interpolated data.
+        // Update all buffers immediately when new state is received
+        this.updateAllBuffers();
+    }
+
+    // New method to update all buffers without interpolation
+    updateAllBuffers() {
+        const gl = this.gl;
+
+        // Update Nest Buffer
+        if (this.latestState && this.latestState.nest) {
+            this.nestPosition[0] = this.latestState.nest.x;
+            this.nestPosition[1] = this.latestState.nest.y;
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.nestBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, this.nestPosition, gl.DYNAMIC_DRAW);
+        } else {
+            // Clear buffer if nest doesn't exist
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.nestBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+        }
+
+        // Update Food Source Buffer
+        if (this.latestState && this.latestState.foodSources.size > 0) {
+            const foodCount = this.latestState.foodSources.size;
+            if (this.foodSourcePositions.length < foodCount * 2) {
+                this.foodSourcePositions = new Float32Array(foodCount * 2);
+            }
+            let bufferIndex = 0;
+            for (const [id, foodPos] of this.latestState.foodSources) {
+                this.foodSourcePositions[bufferIndex++] = foodPos.x;
+                this.foodSourcePositions[bufferIndex++] = foodPos.y;
+            }
+            const bufferDataView = new Float32Array(this.foodSourcePositions.buffer, 0, bufferIndex);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.foodBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, bufferDataView, gl.DYNAMIC_DRAW);
+        } else {
+            // Clear buffer if no food sources
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.foodBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+        }
+
+        // Update Ant Buffer - directly use the latest state without interpolation
+        if (this.latestState && this.latestState.ants.size > 0) {
+            const antCount = this.latestState.ants.size;
+            if (this.antPositions === undefined || this.antPositions.length < antCount * 2) {
+                this.antPositions = new Float32Array(antCount * 2);
+            }
+
+            let bufferIndex = 0;
+            for (const [id, ant] of this.latestState.ants) {
+                this.antPositions[bufferIndex++] = ant.x;
+                this.antPositions[bufferIndex++] = ant.y;
+            }
+
+            const antBufferDataView = new Float32Array(this.antPositions.buffer, 0, bufferIndex);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.antBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, antBufferDataView, gl.DYNAMIC_DRAW);
+        } else {
+            // Clear buffer if no ants
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.antBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+        }
     }
 
     handleMouseDown(e) {
@@ -305,8 +496,6 @@ class EusocietyWebGLRenderer {
         }
     }
 
-    // updateWalkers is removed - state update is handled by updateSimulationState
-
     render(currentTime) { // currentTime is from requestAnimationFrame (milliseconds)
         const gl = this.gl;
         const now = performance.now(); // Use high-resolution timer
@@ -324,95 +513,94 @@ class EusocietyWebGLRenderer {
         }
 
         // --- View Panning/Zoom Interpolation ---
-        // Reintroduce lerping for smoother panning
+        // Keep lerping for view movement (not related to state interpolation)
         this.view.viewportX += (this.view.targetViewportX - this.view.viewportX) * this.view.lerpFactor;
         this.view.viewportY += (this.view.targetViewportY - this.view.viewportY) * this.view.lerpFactor;
-        // Keep lerping for zoom
         this.view.zoom += (this.view.targetZoom - this.view.zoom) * this.view.lerpFactor;
 
-
-        // --- Walker Position Interpolation ---
-        let walkerCount = 0;
+        // --- Removed Ant Position Interpolation ---
+        // We no longer interpolate ant positions - we simply draw the latest positions
+        // Note: antsToDraw will contain all ant information directly from the latest state
+        const antsToDraw = [];
         if (this.latestState) {
-            walkerCount = this.latestState.walkers.size;
-            // Ensure buffer is large enough
-            if (this.interpolatedPositions.length < walkerCount * 2) {
-                this.interpolatedPositions = new Float32Array(walkerCount * 2);
+            for (const [id, ant] of this.latestState.ants) {
+                antsToDraw.push({ x: ant.x, y: ant.y, state: ant.state });
             }
-
-            let bufferIndex = 0;
-            if (this.previousState && this.previousState.timestamp !== this.latestState.timestamp) {
-                const timeSinceLastUpdate = (now / 1000.0) - this.latestState.timestamp; // Time since latest state arrived (seconds)
-                const timeBetweenUpdates = this.latestState.timestamp - this.previousState.timestamp; // Time between last two states (seconds)
-
-                // Avoid division by zero and ensure time flows forward
-                // Remove Math.min(1.0, ...) to allow extrapolation
-                const interpolationFactor = (timeBetweenUpdates > 0.001)
-                    ? Math.max(0.0, timeSinceLastUpdate / timeBetweenUpdates) // Allow factor > 1.0
-                    : 1.0; // If updates are too close or timestamps equal, just use latest
-
-                // Log the factor if it goes above 1 for debugging extrapolation
-                // if (interpolationFactor > 1.0) {
-                //     console.log(`Extrapolating factor: ${interpolationFactor.toFixed(3)} (since last: ${timeSinceLastUpdate.toFixed(3)}s, between: ${timeBetweenUpdates.toFixed(3)}s)`);
-                // }
-
-                for (const [id, latestPos] of this.latestState.walkers) {
-                    const previousPos = this.previousState.walkers.get(id);
-                    if (previousPos) {
-                        // Interpolate if particle exists in both states
-                        this.interpolatedPositions[bufferIndex++] = this.lerp(previousPos.x, latestPos.x, interpolationFactor);
-                        this.interpolatedPositions[bufferIndex++] = this.lerp(previousPos.y, latestPos.y, interpolationFactor);
-                    } else {
-                        // Particle is new, just use its latest position
-                        this.interpolatedPositions[bufferIndex++] = latestPos.x;
-                        this.interpolatedPositions[bufferIndex++] = latestPos.y;
-                    }
-                }
-            } else {
-                // No previous state or timestamps are the same, just use the latest positions
-                for (const [id, latestPos] of this.latestState.walkers) {
-                    this.interpolatedPositions[bufferIndex++] = latestPos.x;
-                    this.interpolatedPositions[bufferIndex++] = latestPos.y;
-                }
-            }
-            // Trim the buffer view if fewer walkers are present than the buffer size
-            // Note: We use bufferIndex which holds the actual count of filled positions (walkerCount * 2)
-            const bufferDataView = new Float32Array(this.interpolatedPositions.buffer, 0, bufferIndex);
-
-            // Update GPU buffer with interpolated data
-            gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer);
-            gl.bufferData(gl.ARRAY_BUFFER, bufferDataView, gl.DYNAMIC_DRAW);
-
-        } else {
-             // No state yet, ensure buffer is empty or cleared if needed
-             if (this.interpolatedPositions.length > 0) {
-                 this.interpolatedPositions = new Float32Array(0);
-                 gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer);
-                 gl.bufferData(gl.ARRAY_BUFFER, this.interpolatedPositions, gl.DYNAMIC_DRAW); // Clear GPU buffer
-             }
         }
-
 
         // --- Drawing ---
         this.resize(); // Check resize
-        gl.clearColor(1.0, 1.0, 1.0, 1.0); // White background
+        gl.clearColor(0.95, 0.95, 0.95, 1.0); // Light grey background
         gl.clear(gl.COLOR_BUFFER_BIT);
 
-        // Set uniforms (View related uniforms are already interpolated)
+        // Set common uniforms
         gl.uniform2f(this.resolutionLocation, gl.canvas.width, gl.canvas.height);
         gl.uniform2f(this.viewportCenterLocation, this.view.viewportX, this.view.viewportY);
         gl.uniform1f(this.zoomLocation, this.view.zoom);
-        gl.uniform1f(this.pointSizeLocation, 2.0); // Base walker size
-        gl.uniform4f(this.colorLocation, 0.0, 0.0, 0.0, 1.0); // Black particles
+        gl.enableVertexAttribArray(this.positionLocation);
 
-        // Draw walkers using the interpolated data in the buffer
-        if (walkerCount > 0) {
-            gl.enableVertexAttribArray(this.positionLocation);
-            gl.bindBuffer(gl.ARRAY_BUFFER, this.walkerBuffer); // Buffer already bound and updated
+        // --- Draw Nest ---
+        if (this.latestState && this.latestState.nest) {
+            gl.uniform1f(this.pointSizeLocation, 10.0); // Larger size for nest
+            gl.uniform4f(this.colorLocation, 0.2, 0.2, 0.8, 1.0); // Blue nest
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.nestBuffer);
             gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
-            gl.drawArrays(gl.POINTS, 0, walkerCount);
-            // console.log(`Drawing ${walkerCount} interpolated walkers.`);
+            gl.drawArrays(gl.POINTS, 0, 1); // Draw 1 point
         }
+
+        // --- Draw Food Sources ---
+        if (this.latestState && this.latestState.foodSources.size > 0) {
+            const foodCount = this.latestState.foodSources.size;
+            gl.uniform1f(this.pointSizeLocation, 5.0); // Medium size for food
+            gl.uniform4f(this.colorLocation, 0.2, 0.8, 0.2, 1.0); // Green food
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.foodBuffer);
+            gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
+            gl.drawArrays(gl.POINTS, 0, foodCount);
+        }
+
+        // --- Draw Ants ---
+        // We need to draw ants potentially in two batches based on state for different colors
+        gl.uniform1f(this.pointSizeLocation, 2.0); // Base ant size
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.antBuffer);
+        gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
+
+        // Process the ant states for drawing the correct color
+        // Since we have the state information in antsToDraw array, we can still use that
+        const antCount = antsToDraw.length;
+
+        // Draw Foraging ants (Black)
+        gl.uniform4f(this.colorLocation, 0.0, 0.0, 0.0, 1.0); // Black
+        let foragingOffset = 0;
+        let foragingCount = 0;
+        for(let i = 0; i < antCount; ++i) {
+            if (antsToDraw[i].state === 'Foraging') {
+                if (foragingCount === 0) foragingOffset = i; // Start of a range
+                foragingCount++;
+            } else {
+                if (foragingCount > 0) {
+                    gl.drawArrays(gl.POINTS, foragingOffset, foragingCount); // Draw completed range
+                }
+                foragingCount = 0; // Reset count
+            }
+        }
+        if (foragingCount > 0) gl.drawArrays(gl.POINTS, foragingOffset, foragingCount); // Draw trailing range
+
+        // Draw ReturningToNest ants (Red)
+        gl.uniform4f(this.colorLocation, 0.8, 0.1, 0.1, 1.0); // Red
+        let returningOffset = 0;
+        let returningCount = 0;
+        for(let i = 0; i < antCount; ++i) {
+            if (antsToDraw[i].state === 'ReturningToNest') {
+                if (returningCount === 0) returningOffset = i;
+                returningCount++;
+            } else {
+                if (returningCount > 0) {
+                    gl.drawArrays(gl.POINTS, returningOffset, returningCount);
+                }
+                returningCount = 0;
+            }
+        }
+        if (returningCount > 0) gl.drawArrays(gl.POINTS, returningOffset, returningCount);
 
         // --- Loop ---
         requestAnimationFrame(this.render.bind(this));
@@ -426,10 +614,10 @@ class EusocietyWebGLRenderer {
 // --- Main Execution ---
 try {
     const renderer = new EusocietyWebGLRenderer('glCanvas');
-    const binaryParser = new BinaryParticleParser();
+    const binaryParser = new BinaryStateParser(); // Use renamed parser
 
     // --- WebSocket ---
-    const socketUrl = 'ws://127.0.0.1:8090';
+    const socketUrl = 'ws://127.0.0.1:8090'; // Make sure this matches backend config
     let socket = null;
 
     function connectWebSocket() {
@@ -448,24 +636,35 @@ try {
         socket.onmessage = (event) => {
             try {
                 let worldState;
-                
-                // Process binary data or JSON
-                if (event.data instanceof ArrayBuffer) {
+
+                // Process incoming data
+                if (typeof event.data === 'string') {
+                    try {
+                        console.log("Successfully parsed JSON data structure:", worldState);
+                    } catch (e) {
+                        console.error("Failed to parse JSON:", e);
+                    }
+                } else if (event.data instanceof ArrayBuffer) {
                     // Binary data
+                    // console.log("Received ArrayBuffer.");
                     worldState = binaryParser.parse(event.data);
                 } else {
-                    // JSON data (fallback)
-                    worldState = JSON.parse(event.data);
+                     console.warn("Received data of unknown type:", typeof event.data);
+                     return; // Don't proceed if type is unknown
                 }
-                
-                if (worldState && Array.isArray(worldState.entities)) {
+
+                // Validate the structure of the received data
+                if (!worldState || !Array.isArray(worldState.ants) || !Array.isArray(worldState.foodSources)) {
+                    console.warn('Invalid or incomplete data format received:', worldState);
+                    return; // Exit if the data is not in the expected format
+                }
+
+                // Check for the new structure
+                if (worldState && Array.isArray(worldState.ants) && Array.isArray(worldState.foodSources)) {
                     // Pass the full parsed state to the renderer
                     renderer.updateSimulationState(worldState);
-
-                    // Optionally show received data count in console
-                    // console.log(`Received state for ${worldState.entities.length} particles, frame: ${worldState.frame}, timestamp: ${worldState.timestamp}`);
                 } else {
-                    console.warn('Received unexpected data format:', worldState);
+                    console.warn('Received unexpected or incomplete data format:', worldState);
                 }
             } catch (e) {
                 console.error('Failed to process WebSocket message:', e);
@@ -482,9 +681,9 @@ try {
             console.log('WebSocket connection closed. Attempting to reconnect...');
             statusSpan.textContent = 'Disconnected';
             // Clear renderer state on disconnect
-            renderer.previousState = null;
             renderer.latestState = null;
-            renderer.updateSimulationState({ timestamp: 0, entities: [] }); // Clear display
+            // Clear display with empty state matching new structure
+            renderer.updateSimulationState({ timestamp: 0, ants: [], nest: null, foodSources: [] });
             setTimeout(connectWebSocket, 5000); // Reconnect logic
         };
     }

@@ -11,10 +11,11 @@ mod sender;
 pub mod delta_compression; 
 pub mod websocket; // Declare the new websocket module
 
-use bevy_ecs::prelude::Resource; // Added import
+use bevy_ecs::prelude::Resource;
 use serde::Serialize;
 use std::time::Instant;
-use tracing::{debug, info}; // Added error import for potential use
+use tracing::{debug, info};
+use crate::simulation::components::AntState; // Import AntState for serialization
 
 // Re-export types
 pub use self::serializer::{
@@ -41,16 +42,51 @@ pub struct ParticleState {
     pub y: f32,
 }
 
+// --- New Export State Structs ---
+
+/// Represents the state of a single Ant for serialization.
+#[derive(Serialize, Clone, Debug)]
+pub struct AntExportState {
+    pub id: u32, // Use u32 for transport
+    pub x: f32,
+    pub y: f32,
+    pub state: AntState, // Include the ant's behavioral state
+}
+
+/// Represents the state of the Nest for serialization.
+#[derive(Serialize, Clone, Debug)]
+pub struct NestExportState {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Represents the state of a single Food Source for serialization.
+#[derive(Serialize, Clone, Debug)]
+pub struct FoodSourceExportState {
+    // Let's add an ID in case we need to track individual food items later,
+    // even if they are just markers now. Use Entity's index for simplicity.
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+}
+
+
 /// Represents the complete state of the simulation at a specific frame, ready for serialization.
-#[derive(Serialize, Clone, Debug, Default)] 
+#[derive(Serialize, Clone, Debug, Default)]
 pub struct SimulationState {
     /// The simulation frame number for this state snapshot.
     pub frame: u64,
     /// The simulation time elapsed when this state was captured.
     pub timestamp: f64,
-    /// A list containing the state of all particles in the simulation for this frame.
-    pub particles: Vec<ParticleState>,
+    // pub particles: Vec<ParticleState>, // Remove old particle list
+    /// List of ant states.
+    pub ants: Vec<AntExportState>,
+    /// State of the nest (assuming one). Option<> in case it doesn't exist yet? Let's assume it exists.
+    pub nest: Option<NestExportState>,
+    /// List of food source states.
+    pub food_sources: Vec<FoodSourceExportState>,
 }
+
 
 /// Bevy resource that manages the serialization and sending of simulation state.
 ///
@@ -138,14 +174,15 @@ impl TransportController {
         let sender: Box<dyn Sender> = match &config.sender {
             SenderConfig::File(file_config) => {
                 update_frequency = Some(file_config.output_frequency);
-                optimized_serializer = None;
+                optimized_serializer = None; // No optimized serializer for File sender
                 Box::new(FileSender::new(&file_config.output_path)?)
             },
             SenderConfig::WebSocket(ws_config) => {
                 update_frequency = Some(ws_config.update_frequency);
-                
-                // Create optimized binary serializer with delta compression if enabled
-                let threshold = if config.delta_compression == Some(true) {
+
+                // --- Create OptimizedBinarySerializer ONLY if base serializer is Binary ---
+                if matches!(config.serializer, SerializerConfig::Binary(_)) {
+                    let threshold = if config.delta_compression == Some(true) {
                     // Use the configured threshold or default to 0.1 if not specified
                     let threshold_value = config.delta_threshold.unwrap_or(0.1);
                     info!("Delta compression enabled with threshold {}", threshold_value);
@@ -186,10 +223,17 @@ impl TransportController {
                     }
                 } else {
                     // Default to enabled for WebSocket with large particle counts
-                    info!("Parallel serialization enabled with default settings");
+                        info!("Parallel serialization enabled with default settings");
+                    }
+
+                    optimized_serializer = Some(opt_serializer); // Assign if Binary
+                } else {
+                    // If base serializer is not Binary, don't use optimized serializer
+                    info!("Base serializer is not Binary, OptimizedBinarySerializer disabled for WebSocket.");
+                    optimized_serializer = None;
                 }
-                
-                optimized_serializer = Some(opt_serializer);
+                // --- End OptimizedBinarySerializer Creation ---
+
                 Box::new(WebSocketSender::new(&ws_config.websocket_address)?)
             },
             SenderConfig::Null(_) => {
@@ -291,30 +335,35 @@ impl TransportController {
         }
 
         let serialization_start = Instant::now();
-        
-        // Use optimized serializer if available (typically for WebSocket)
-        let data = if let Some(serializer) = &mut self.optimized_serializer {
-            // Count particles before potentially filtering them
-            let original_particle_count = state.particles.len();
-            
-            // Serialize with potentially filtering out unchanged particles
+
+        // Determine which serializer to use
+        let data = match &mut self.optimized_serializer {
+            // Use optimized ONLY if it exists (meaning sender=WebSocket AND base serializer=Binary)
+            Some(serializer) => {
+                // Count ants before potentially filtering them
+                let original_ant_count = state.ants.len();
+
+                // Serialize with potentially filtering out unchanged particles
             let result = serializer.serialize_state(state)
                 .map_err(TransportError::SerializationError)?;
                 
             // Log detailed info if using delta compression
             if serializer.has_delta_compression() {
+                // Log ant count instead of particle count
                 debug!(
-                    original_particles = original_particle_count,
+                    original_ants = original_ant_count,
                     serialized_size_bytes = result.len(),
-                    "Delta compression metrics"
-                );
+                        "Delta compression metrics"
+                    );
+                }
+                result
             }
-            
-            result
-        } else {
-            // Fallback to the standard serializer
-            self.serializer.serialize_to_bytes(state)
-                .map_err(TransportError::SerializationError)?
+            // Otherwise (no optimized serializer OR base serializer wasn't Binary), use the base serializer
+            None => {
+                // info!("Using base serializer for sending."); // This log was removed as config is not available here
+                self.serializer.serialize_to_bytes(state)
+                    .map_err(TransportError::SerializationError)?
+            }
         };
         
         let serialization_time = serialization_start.elapsed();
@@ -338,10 +387,11 @@ impl TransportController {
         };
 
         if should_log {
+            // Log ant count instead of particle count
             info!(
                 frame = self.current_frame,
-                particles = state.particles.len(), // <-- Added comma
-                serialization_ms = self.last_serialization_time_ms, // <-- Added comma
+                ants = state.ants.len(), // Log ant count
+                serialization_ms = self.last_serialization_time_ms,
                 send_ms = self.last_send_time_ms,
                 data_size_mb = (self.last_data_size_bytes as f64 / 1_048_576.0),
                 "Transport performance"

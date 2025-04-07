@@ -199,8 +199,9 @@ impl OptimizedBinarySerializer {
             state.clone() // Clone if no delta compression needed
         };
         
-        // 2. Choose serialization strategy based on particle count and config
-        if self.use_parallel && final_state.particles.len() >= self.parallel_threshold {
+        // 2. Choose serialization strategy based on ant count and config
+        // Check ants length now
+        if self.use_parallel && final_state.ants.len() >= self.parallel_threshold {
             // Use parallel serialization for large states
             self.serialize_state_parallel_compatible(&final_state)
         } else {
@@ -223,28 +224,31 @@ impl OptimizedBinarySerializer {
     ///
     /// # Errors
     ///
-    /// Returns `SerializationError` if header or particle chunk serialization fails.
+    /// Returns `SerializationError` if header or data chunk serialization fails.
     fn serialize_state_parallel_compatible(&self, state: &super::SimulationState) -> Result<Vec<u8>, SerializationError> {
-        // Estimate buffer size (can be approximate)
-        let particle_size = std::mem::size_of::<u32>() + std::mem::size_of::<f32>() * 2; // id, x, y
-        let header_size = std::mem::size_of::<u64>() * 2 + std::mem::size_of::<f64>(); // frame, count, timestamp
-        let estimated_capacity = header_size + state.particles.len() * particle_size;
+        // Estimate buffer size (rough estimate)
+        let ant_size = std::mem::size_of::<u32>() * 2 + std::mem::size_of::<f32>() * 2; // id, state, x, y
+        let nest_size = std::mem::size_of::<u8>() + std::mem::size_of::<f32>() * 2; // tag, x, y
+        let food_size = std::mem::size_of::<u32>() + std::mem::size_of::<f32>() * 2; // id, x, y
+        let header_size = std::mem::size_of::<u64>() + std::mem::size_of::<f64>(); // frame, timestamp
+        let vec_len_size = std::mem::size_of::<u64>(); // For ant and food vecs
+        let estimated_capacity = header_size
+            + vec_len_size + state.ants.len() * ant_size
+            + nest_size
+            + vec_len_size + state.food_sources.len() * food_size;
 
         // --- Parallel Serialization Steps ---
 
-        // 1. Serialize header (frame, timestamp, particle count) sequentially
+        // 1. Serialize header (frame, timestamp) sequentially
         let mut final_buffer = Vec::with_capacity(estimated_capacity);
-        { // Scope to borrow final_buffer mutably
-            // Frame
-            final_buffer.extend_from_slice(&bincode::serialize(&state.frame)?);
-            // Timestamp
-            final_buffer.extend_from_slice(&bincode::serialize(&state.timestamp)?);
-            // Particle count (as u64 for bincode Vec length prefix)
-            final_buffer.extend_from_slice(&bincode::serialize(&(state.particles.len() as u64))?);
-        }
+        final_buffer.extend_from_slice(&bincode::serialize(&state.frame)?);
+        final_buffer.extend_from_slice(&bincode::serialize(&state.timestamp)?);
 
-        // 2. Serialize particle data in parallel chunks
-        // Build the Rayon thread pool, configuring the number of threads if specified
+        // 2. Serialize Ant data (potentially in parallel)
+        // Serialize ant count (as u64 for bincode Vec length prefix)
+        final_buffer.extend_from_slice(&bincode::serialize(&(state.ants.len() as u64))?);
+
+        // Build the Rayon thread pool
         let pool = {
             let builder = rayon::ThreadPoolBuilder::new();
             if self.thread_count > 0 {
@@ -256,30 +260,42 @@ impl OptimizedBinarySerializer {
             .map_err(|e| SerializationError::ParallelError(format!("Failed to build Rayon pool: {}", e)))?
         };
 
-        // Install the pool context for parallel iteration
-        let particle_chunks: Result<Vec<Vec<u8>>, SerializationError> = pool.install(|| {
-            state.particles
+        // Serialize ant data in parallel chunks
+        let ant_chunks_result: Result<Vec<Vec<u8>>, SerializationError> = pool.install(|| {
+            state.ants
                 .par_chunks(self.parallel_threshold.max(1)) // Ensure chunk size is at least 1
-                .map(|particle_chunk| {
+                .map(|ant_chunk| {
                     // Serialize each chunk into its own buffer
-                    let mut chunk_buffer = Vec::with_capacity(particle_chunk.len() * particle_size);
-                    for particle in particle_chunk {
-                        // Serialize fields individually for compatibility
-                        chunk_buffer.extend_from_slice(&bincode::serialize(&particle.id)?);
-                        chunk_buffer.extend_from_slice(&bincode::serialize(&particle.x)?);
-                        chunk_buffer.extend_from_slice(&bincode::serialize(&particle.y)?);
+                    let mut chunk_buffer = Vec::with_capacity(ant_chunk.len() * ant_size);
+                    for ant in ant_chunk {
+                        // Serialize fields individually
+                        chunk_buffer.extend_from_slice(&bincode::serialize(&ant.id)?);
+                        chunk_buffer.extend_from_slice(&bincode::serialize(&ant.x)?);
+                        chunk_buffer.extend_from_slice(&bincode::serialize(&ant.y)?);
+                        chunk_buffer.extend_from_slice(&bincode::serialize(&ant.state)?); // Serialize enum state
                     }
                     Ok(chunk_buffer)
                 })
-                .collect() // Collect results within the Rayon pool context
+                .collect() // Collect Vec<u8> results
         });
 
-        // Check for errors during parallel processing
-        let collected_chunks = particle_chunks?;
-
-        // 3. Concatenate header and parallel chunks
-        for chunk in collected_chunks {
+        // Check for errors and append chunks
+        let collected_ant_chunks = ant_chunks_result?;
+        for chunk in collected_ant_chunks {
             final_buffer.extend_from_slice(&chunk);
+        }
+
+        // 3. Serialize Nest Option sequentially
+        final_buffer.extend_from_slice(&bincode::serialize(&state.nest)?);
+
+        // 4. Serialize Food Sources sequentially (assuming usually fewer than ants)
+        // Serialize food count (as u64 for bincode Vec length prefix)
+        final_buffer.extend_from_slice(&bincode::serialize(&(state.food_sources.len() as u64))?);
+        // Serialize individual food sources
+        for food in &state.food_sources {
+             final_buffer.extend_from_slice(&bincode::serialize(&food.id)?);
+             final_buffer.extend_from_slice(&bincode::serialize(&food.x)?);
+             final_buffer.extend_from_slice(&bincode::serialize(&food.y)?);
         }
 
         Ok(final_buffer)

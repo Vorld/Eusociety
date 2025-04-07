@@ -15,16 +15,20 @@ use tracing::{info, error, debug, trace, warn};
 // Removed unused imports: bevy_ecs::prelude::*, rand
 // `bevy_ecs::prelude::*` is imported again below, keeping that one.
 
-use bevy_ecs::prelude::*; // Ensure ResMut, Res etc are available
+use bevy_ecs::prelude::*;
 use crate::config::Config;
-use crate::transport::TransportController; // Keep this import
+use crate::transport::TransportController;
 use self::resources::{Time, FrameCounter, SimulationConfigResource, TransportConfigResource, CurrentSimulationState};
 use self::systems::{
-    move_particles, randomize_velocities, handle_boundaries,
-    update_current_simulation_state_resource, // Keep this import
-    send_simulation_data_system, // Import the new system
-    spawn_particles, // Import the setup system
-    // Removed: extract_and_send, flush_transport, SimulationTimer, SimulationTransport
+    move_particles, // Keep basic movement
+    // randomize_velocities, // Remove redundant randomization
+    handle_boundaries,
+    update_current_simulation_state_resource,
+    send_simulation_data_system,
+    setup_environment_system,
+    spawn_ants_system,
+    ant_state_machine_system, // New state logic
+    ant_movement_system,      // New movement logic
 };
 // Removed: use crate::simulation::systems::state_export::update_current_simulation_state_resource; // No longer needed as it's imported above
 
@@ -83,18 +87,23 @@ impl SimulationApp {
         // --- Create Schedules ---
         // Startup schedule for one-time setup systems
         let mut startup_schedule = Schedule::default();
-        startup_schedule.add_systems(spawn_particles); // Add particle spawning system
+        startup_schedule.add_systems((
+            setup_environment_system, // Spawn nest & food
+            spawn_ants_system,        // Spawn ants
+        )); // Add new setup systems
 
         // Update schedule for systems that run every frame
         let mut update_schedule = Schedule::default();
         update_schedule.add_systems((
-            move_particles,
-            randomize_velocities,
-            handle_boundaries,
-            // Add the state export system to run after simulation logic
-            update_current_simulation_state_resource.after(handle_boundaries),
-            // Add the new transport system to run after state export
-            send_simulation_data_system.after(update_current_simulation_state_resource),
+            // --- Ant Logic ---
+            ant_state_machine_system, // Update state based on position
+            ant_movement_system,      // Adjust velocity based on state (random walk for now)
+            // --- Physics ---
+            move_particles,           // Apply velocity to change position
+            handle_boundaries,        // Handle world boundaries
+            // --- Export & Transport ---
+            update_current_simulation_state_resource.after(handle_boundaries), // Export state after all movement
+            send_simulation_data_system.after(update_current_simulation_state_resource), // Send data
         ));
         // --- End Schedule Creation ---
 

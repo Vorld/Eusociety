@@ -222,9 +222,13 @@ async fn handle_connection(
 
     // Add the sender part of the channel to the shared client list.
     // Keep a clone (`client_id`) to identify this client for removal later.
-    let client_id = client_tx.clone(); 
-    clients.lock().map_err(|e| TransportError::RuntimeError(format!("Client mutex poisoned on add: {}", e)))?.push(client_tx);
-    
+    let client_id = client_tx.clone();
+    { // Scope for mutex guard
+        let mut clients_guard = clients.lock().map_err(|e| TransportError::RuntimeError(format!("Client mutex poisoned on add: {}", e)))?;
+        clients_guard.push(client_tx);
+        info!("Client added. Current count: {}", clients_guard.len()); // Log client addition
+    } // Mutex guard dropped here
+
     // Split the WebSocket stream into a sender (sink) and receiver (stream).
     let (mut ws_sink, mut ws_stream) = ws_stream.split();
 
@@ -232,13 +236,23 @@ async fn handle_connection(
     // This task listens on the client's channel (`client_rx`) and forwards messages
     // to the client's WebSocket sink (`ws_sink`).
     let send_task = tokio::spawn(async move {
-        while let Some(data_arc) = client_rx.recv().await { 
+        info!("Send task started for a client."); // Log task start
+        while let Some(data_arc) = client_rx.recv().await {
+            // info!("Send task: Received data ({} bytes) from channel.", data_arc.len()); // Log data received from channel
             // Convert Arc<Vec<u8>> back to Vec<u8> for the Message::Binary variant
-            let data_vec = data_arc.as_ref().clone(); 
-            if ws_sink.send(Message::Binary(data_vec)).await.is_err() {
-                // Error sending probably means the client disconnected.
-                info!("Send task: Error sending to WebSocket sink, client likely disconnected.");
-                break; 
+            let data_vec = data_arc.as_ref().clone();
+            let send_result = ws_sink.send(Message::Binary(data_vec)).await;
+            // Add log immediately after send attempt
+            // info!("Send task: ws_sink.send result: {:?}", send_result.is_ok());
+            match send_result {
+                Ok(_) => {
+                    // Successfully sent
+                }
+                Err(e) => {
+                    // Error sending
+                    error!("Send task: Error sending to WebSocket sink: {}. Client likely disconnected.", e);
+                    break;
+                }
             }
         }
         // Attempt to close the sink gracefully when the channel is closed or sending fails.
@@ -279,9 +293,12 @@ async fn handle_connection(
     // --- Cleanup ---
     // Remove this client's sender channel from the shared list.
     info!("Removing disconnected client from list.");
-    clients.lock().map_err(|e| TransportError::RuntimeError(format!("Client mutex poisoned on remove: {}", e)))?
-           .retain(|sender| !sender.same_channel(&client_id)); // Use same_channel for reliable comparison
-    info!("Client removed.");
+    let final_count = { // Scope for mutex guard
+        let mut clients_guard = clients.lock().map_err(|e| TransportError::RuntimeError(format!("Client mutex poisoned on remove: {}", e)))?;
+        clients_guard.retain(|sender| !sender.same_channel(&client_id)); // Use same_channel for reliable comparison
+        clients_guard.len()
+    }; // Mutex guard dropped here
+    info!("Client removed. Remaining clients: {}", final_count); // Log remaining count
 
     Ok(())
 }

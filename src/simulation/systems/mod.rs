@@ -10,17 +10,26 @@
 pub mod movement;
 pub mod randomization;
 pub mod boundary;
-pub mod setup;
-pub mod state_export; 
-pub mod transport_integration; 
+// pub mod setup; // Old particle setup
+pub mod environment_setup; // New: Spawns nest and food
+pub mod ant_setup;         // New: Spawns ants
+pub mod state_export;
+pub mod transport_integration;
+// Add new modules for ant logic:
+pub mod ant_logic;
+pub mod ant_movement;
+// pub mod pheromones; // For Phase 2
 
 // Re-export the primary system function from each module for convenient use in schedule setup.
 pub use movement::move_particles;
-pub use randomization::randomize_velocities;
+pub use randomization::randomize_velocities; // Keep for now, might remove if ant_movement fully replaces it
 pub use boundary::handle_boundaries;
-pub use setup::spawn_particles;
-// Removed: pub use transport::{extract_and_send, flush_transport, SimulationTimer, SimulationTransport};
-pub use state_export::update_current_simulation_state_resource; // Added state_export system
-pub use transport_integration::send_simulation_data_system; // Export from the new module file
+// pub use setup::spawn_particles; // Old particle setup removed
+pub use environment_setup::setup_environment_system; // New
+pub use ant_setup::spawn_ants_system;             // New
+pub use ant_logic::ant_state_machine_system;      // New
+pub use ant_movement::ant_movement_system;        // New
+pub use state_export::update_current_simulation_state_resource;
+pub use transport_integration::send_simulation_data_system;
 
 // Removed the inline transport_integration module

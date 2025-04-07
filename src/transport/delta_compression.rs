@@ -1,16 +1,19 @@
+
 //! Implements delta compression logic for optimizing simulation state serialization.
 //! Only entities that have moved significantly since the last sent state are included.
 
 use std::collections::HashMap;
-use crate::transport::SimulationState; // Import necessary types
+// Import SimulationState only, AntExportState is accessed via state.ants
+use crate::transport::SimulationState;
 
 /// State container for delta compression.
 ///
-/// Stores the last known positions of particles and filters incoming `SimulationState`
+/// Stores the last known positions of ants and filters incoming `SimulationState`
 /// based on a movement threshold. Also tracks metrics about compression effectiveness.
+/// Note: Currently only compresses ants, not nest or food sources.
 #[derive(Clone)]
 pub struct DeltaCompressor {
-    /// Stores the last known position `[x, y]` for each particle ID (`u32`).
+    /// Stores the last known position `[x, y]` for each ant ID (`u32`).
     last_positions: HashMap<u32, [f32; 2]>,
     /// The square of the movement distance threshold. Comparing squared distances
     /// avoids costly square root calculations in the filtering logic.
@@ -19,18 +22,18 @@ pub struct DeltaCompressor {
     metrics: DeltaCompressionMetrics,
 }
 
-/// Stores metrics related to the effectiveness of delta compression.
+/// Stores metrics related to the effectiveness of delta compression for ants.
 #[derive(Clone, Debug, Default)]
 pub struct DeltaCompressionMetrics {
-    /// Total number of particles processed across all frames since initialization or reset.
-    pub total_particles_processed: usize,
-    /// Total number of particles included in the output state after filtering (cumulative).
-    pub total_particles_sent: usize,
-    /// Number of particles processed in the most recent call to `filter_state`.
-    pub last_frame_particles_processed: usize,
-    /// Number of particles included in the output state in the most recent call to `filter_state`.
-    pub last_frame_particles_sent: usize,
-    /// Running average of the percentage of particles filtered out across all processed frames.
+    /// Total number of ants processed across all frames since initialization or reset.
+    pub total_ants_processed: usize,
+    /// Total number of ants included in the output state after filtering (cumulative).
+    pub total_ants_sent: usize,
+    /// Number of ants processed in the most recent call to `filter_state`.
+    pub last_frame_ants_processed: usize,
+    /// Number of ants included in the output state in the most recent call to `filter_state`.
+    pub last_frame_ants_sent: usize,
+    /// Running average of the percentage of ants filtered out across all processed frames.
     pub avg_reduction_pct: f32,
 }
 
@@ -51,10 +54,10 @@ impl DeltaCompressor {
     }
     
     /// Filters the provided `SimulationState`, returning a new state containing only
-    /// particles that have moved more than the configured threshold since the last
-    /// call to this method for that particle ID.
+    /// ants that have moved more than the configured threshold since the last
+    /// call to this method for that ant ID. Nest and food sources are passed through unchanged.
     ///
-    /// Updates the internal `last_positions` map and calculates performance metrics.
+    /// Updates the internal `last_positions` map and calculates performance metrics for ants.
     ///
     /// # Arguments
     ///
@@ -62,77 +65,80 @@ impl DeltaCompressor {
     ///
     /// # Returns
     ///
-    /// A new `SimulationState` containing only the particles that met the movement threshold.
-    pub fn filter_state(&mut self, state: &SimulationState) -> SimulationState 
+    /// A new `SimulationState` containing only the ants that met the movement threshold,
+    /// plus the original nest and food source data.
+    pub fn filter_state(&mut self, state: &SimulationState) -> SimulationState
     {
-        let original_count = state.particles.len();
-        
-        // Create a new state with only particles that have moved
-        let mut filtered_particles = Vec::new();
-        
-        for particle in &state.particles {
-            let entity_id = particle.id; // Already u32
-            let current_pos = [particle.x, particle.y]; // Create array for comparison
-            
-            // Check if the entity has moved significantly
+        let original_ant_count = state.ants.len();
+
+        // Create a new state with only ants that have moved
+        let mut filtered_ants = Vec::new();
+
+        for ant in &state.ants { // Iterate over ants now
+            let entity_id = ant.id; // Use ant ID
+            let current_pos = [ant.x, ant.y]; // Use ant position
+
+            // Check if the ant has moved significantly
             let should_include = match self.last_positions.get(&entity_id) {
                 Some(last_pos) => {
                     let dx = current_pos[0] - last_pos[0];
                     let dy = current_pos[1] - last_pos[1];
                     let dist_squared = dx*dx + dy*dy;
-                    
+
                     // Include if moved more than threshold
                     dist_squared > self.threshold_squared
                 },
-                None => true, // Always include new entities
+                None => true, // Always include new ants
             };
-            
+
             if should_include {
                 // Update the last known position
                 self.last_positions.insert(entity_id, current_pos);
-                filtered_particles.push(particle.clone());
+                filtered_ants.push(ant.clone()); // Add ant to filtered list
             }
         }
 
-        // Update metrics
-        let filtered_count = filtered_particles.len();
-        let reduction_pct = if original_count > 0 {
-            100.0 * (1.0 - (filtered_count as f32 / original_count as f32))
+        // Update metrics for ants
+        let filtered_ant_count = filtered_ants.len();
+        let reduction_pct = if original_ant_count > 0 {
+            100.0 * (1.0 - (filtered_ant_count as f32 / original_ant_count as f32))
         } else {
             0.0
         };
-        
-        self.metrics.total_particles_processed += original_count;
-        self.metrics.total_particles_sent += filtered_count;
-        self.metrics.last_frame_particles_processed = original_count;
-        self.metrics.last_frame_particles_sent = filtered_count;
-        
-        // Update running average
-        if self.metrics.total_particles_processed > 0 {
-            self.metrics.avg_reduction_pct = 100.0 * (1.0 - (self.metrics.total_particles_sent as f32 / 
-                                                      self.metrics.total_particles_processed as f32));
+
+        self.metrics.total_ants_processed += original_ant_count;
+        self.metrics.total_ants_sent += filtered_ant_count;
+        self.metrics.last_frame_ants_processed = original_ant_count;
+        self.metrics.last_frame_ants_sent = filtered_ant_count;
+
+        // Update running average for ants
+        if self.metrics.total_ants_processed > 0 {
+            self.metrics.avg_reduction_pct = 100.0 * (1.0 - (self.metrics.total_ants_sent as f32 /
+                                                      self.metrics.total_ants_processed as f32));
         }
-        
-        // Log metrics periodically (every 60 frames = ~1 second at 60 fps)
+
+        // Log metrics periodically
         if state.frame % 60 == 0 {
             tracing::info!(
                 frame = state.frame,
-                original_particles = original_count,
-                filtered_particles = filtered_count,
+                original_ants = original_ant_count,
+                filtered_ants = filtered_ant_count,
                 reduction_pct = format!("{:.2}%", reduction_pct),
                 avg_reduction = format!("{:.2}%", self.metrics.avg_reduction_pct),
-                threshold = (self.threshold_squared as f32).sqrt(),
-                "Delta compression metrics"
+                threshold = self.threshold(), // Use method to get threshold
+                "Ant delta compression metrics" // Updated log message
             );
         }
-        
-        // Create a new state with only the filtered particles
+
+        // Create a new state with filtered ants and original nest/food
         SimulationState {
             frame: state.frame,
             timestamp: state.timestamp,
-            particles: filtered_particles,
-        } 
-    } 
+            ants: filtered_ants, // Use filtered ants
+            nest: state.nest.clone(), // Clone nest state
+            food_sources: state.food_sources.clone(), // Clone food sources
+        }
+    }
     
     /// Returns a reference to the current delta compression metrics.
     pub fn metrics(&self) -> &DeltaCompressionMetrics {

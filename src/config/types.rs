@@ -29,6 +29,8 @@ pub struct SimulationConfig {
     pub boundary_behavior: BoundaryBehavior,
     /// Target frame rate for the simulation loop.
     pub frame_rate: u32,
+    /// Number of food sources to spawn in the environment.
+    pub food_sources_count: usize,
 }
 
 /// Transport-specific configuration parameters.
