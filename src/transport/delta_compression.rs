@@ -137,6 +137,7 @@ impl DeltaCompressor {
             ants: filtered_ants, // Use filtered ants
             nest: state.nest.clone(), // Clone nest state
             food_sources: state.food_sources.clone(), // Clone food sources
+            pheromones: state.pheromones.clone(), // Clone pheromones (no delta compression for them yet)
         }
     }
     

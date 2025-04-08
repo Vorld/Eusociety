@@ -15,7 +15,7 @@ use bevy_ecs::prelude::Resource;
 use serde::Serialize;
 use std::time::Instant;
 use tracing::{debug, info};
-use crate::simulation::components::AntState; // Import AntState for serialization
+use crate::simulation::components::{AntState, PheromoneType}; // Import AntState & PheromoneType for serialization
 
 // Re-export types
 pub use self::serializer::{
@@ -70,6 +70,16 @@ pub struct FoodSourceExportState {
     pub y: f32,
 }
 
+/// Represents the state of a single Pheromone deposit for serialization.
+#[derive(Serialize, Clone, Debug)]
+pub struct PheromoneExportState {
+    pub id: u32, // Use entity index
+    pub x: f32,
+    pub y: f32,
+    pub type_: PheromoneType,
+    pub strength: f32,
+}
+
 
 /// Represents the complete state of the simulation at a specific frame, ready for serialization.
 #[derive(Serialize, Clone, Debug, Default)]
@@ -85,6 +95,8 @@ pub struct SimulationState {
     pub nest: Option<NestExportState>,
     /// List of food source states.
     pub food_sources: Vec<FoodSourceExportState>,
+    /// List of active pheromone states.
+    pub pheromones: Vec<PheromoneExportState>,
 }
 
 

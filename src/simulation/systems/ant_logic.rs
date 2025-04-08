@@ -75,7 +75,7 @@ pub fn ant_state_machine_system(
             AntState::ReturningToNest => {
                 // Check distance to nest (logic remains the same)
                 let dist_to_nest_sq = distance_squared(ant_pos, &nest_position);
-                if dist_to_nest_sq <= INTERACTION_RADIUS_SQ {
+                if dist_to_nest_sq <= INTERACTION_RADIUS_SQ*50.0 {
                     // Store ant entity to change state after the loop
                     ants_reached_nest.push(ant_entity);
                 }

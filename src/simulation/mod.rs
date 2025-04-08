@@ -21,17 +21,23 @@ use crate::config::Config;
 use crate::transport::TransportController;
 use self::resources::{Time, FrameCounter, SimulationConfigResource, TransportConfigResource, CurrentSimulationState};
 // Import Quadtree components
-use self::spatial::{FoodQuadtree, Rect, build_food_quadtree_system};
+use self::spatial::{FoodQuadtree, PheromoneQuadtree, Rect, build_food_quadtree_system}; // Added PheromoneQuadtree
 use self::systems::{
-    move_particles, // Keep basic movement
-    // randomize_velocities, // Remove redundant randomization
+    move_particles,
     handle_boundaries,
     update_current_simulation_state_resource,
     send_simulation_data_system,
     setup_environment_system,
     spawn_ants_system,
-    ant_state_machine_system, // New state logic
-    ant_movement_system,      // New movement logic
+    ant_state_machine_system,
+    ant_movement_system,
+    // Import pheromone systems
+    pheromones::{
+        setup_pheromone_timer,
+        pheromone_deposit_system,
+        pheromone_decay_system,
+        pheromone_follow_system,
+    },
 };
 // Removed: use crate::simulation::systems::state_export::update_current_simulation_state_resource; // No longer needed as it's imported above
 
@@ -85,6 +91,8 @@ impl SimulationApp {
             world_height ,
         );
         world.insert_resource(FoodQuadtree::new(world_boundary));
+        // Initialize PheromoneQuadtree resource (using the same boundary)
+        world.insert_resource(PheromoneQuadtree::new(world_boundary));
 
 
         // Create transport controller and insert as resource
@@ -107,21 +115,32 @@ impl SimulationApp {
             setup_environment_system,
             spawn_ants_system.after(setup_environment_system),
             build_food_quadtree_system.after(spawn_ants_system),
+            // Add pheromone timer setup
+            setup_pheromone_timer.after(build_food_quadtree_system),
         ));
 
 
         // Update schedule for systems that run every frame
         let mut update_schedule = Schedule::default();
+        // Define system order explicitly using .before/.after or system sets
+        // Following the order recommended in Phase2.md
         update_schedule.add_systems((
-            // --- Ant Logic ---
-            ant_state_machine_system, // Update state based on position
-            ant_movement_system,      // Adjust velocity based on state (random walk for now)
-            // --- Physics ---
-            move_particles,           // Apply velocity to change position
-            handle_boundaries,        // Handle world boundaries
-            // --- Export & Transport ---
-            update_current_simulation_state_resource.after(handle_boundaries), // Export state after all movement
-            send_simulation_data_system.after(update_current_simulation_state_resource), // Send data
+            // --- Pheromone Logic (Runs first) ---
+            pheromone_deposit_system,
+            pheromone_decay_system.after(pheromone_deposit_system),
+            pheromone_follow_system.after(pheromone_decay_system),
+
+            // --- Ant Logic (Uses pheromone influence) ---
+            ant_state_machine_system, // Update state based on position (can run before or after pheromone follow)
+            ant_movement_system.after(pheromone_follow_system), // Must run after influence is calculated
+
+            // --- Physics (Uses updated velocity) ---
+            move_particles.after(ant_movement_system),
+            handle_boundaries.after(move_particles),
+
+            // --- Export & Transport (Runs last) ---
+            update_current_simulation_state_resource.after(handle_boundaries),
+            send_simulation_data_system.after(update_current_simulation_state_resource),
         ));
         // --- End Schedule Creation ---
 

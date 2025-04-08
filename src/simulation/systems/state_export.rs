@@ -2,10 +2,11 @@
 //! into a resource for transport.
 
 use bevy_ecs::prelude::*;
-use crate::simulation::components::{ParticleId, Position, Ant, AntState, Nest, FoodSource}; // Import Ant components
+// Import Ant, Nest, Food, and Pheromone components
+use crate::simulation::components::{ParticleId, Position, Ant, AntState, Nest, FoodSource, Pheromone};
 use crate::simulation::resources::{CurrentSimulationState, FrameCounter};
 // Import specific export state structs and the main SimulationState
-use crate::transport::{AntExportState, NestExportState, FoodSourceExportState, SimulationState};
+use crate::transport::{AntExportState, NestExportState, FoodSourceExportState, PheromoneExportState, SimulationState}; // Added PheromoneExportState
 
 /// Bevy system that gathers the current state of ants, nest, and food sources
 /// and updates the `CurrentSimulationState` resource.
@@ -20,12 +21,14 @@ use crate::transport::{AntExportState, NestExportState, FoodSourceExportState, S
 /// * `query_ants` - Query for ant entities and their relevant components.
 /// * `query_nest` - Query for the nest entity and its position.
 /// * `query_food` - Query for food source entities and their positions.
+/// * `query_pheromones` - Query for pheromone entities and their data.
 /// * `frame_counter` - The `FrameCounter` resource providing the current frame number and timestamp.
 pub fn update_current_simulation_state_resource(
     mut state_resource: ResMut<CurrentSimulationState>,
-    query_ants: Query<(Entity, &ParticleId, &Position, &AntState), With<Ant>>, // Query ants
-    query_nest: Query<&Position, With<Nest>>, // Query nest position
-    query_food: Query<(Entity, &Position), With<FoodSource>>, // Query food sources
+    query_ants: Query<(Entity, &ParticleId, &Position, &AntState), With<Ant>>,
+    query_nest: Query<&Position, With<Nest>>,
+    query_food: Query<(Entity, &Position), With<FoodSource>>,
+    query_pheromones: Query<(Entity, &Position, &Pheromone)>, // Added query for pheromones
     frame_counter: Res<FrameCounter>,
 ) {
     // Collect ant states
@@ -55,14 +58,26 @@ pub fn update_current_simulation_state_resource(
         })
         .collect();
 
-    // Update the resource with the new structure
+    // Collect pheromone states
+    let pheromone_states: Vec<PheromoneExportState> = query_pheromones
+        .iter()
+        .map(|(entity, pos_ref, pheromone_ref)| PheromoneExportState {
+            id: entity.index(), // Use entity index as ID
+            x: pos_ref.x,
+            y: pos_ref.y,
+            type_: pheromone_ref.type_, // Copy the type enum
+            strength: pheromone_ref.strength,
+        })
+        .collect();
+
+    // Update the resource with the new structure including pheromones
     state_resource.0 = SimulationState {
         frame: frame_counter.count,
         timestamp: frame_counter.timestamp,
         ants: ant_states,
         nest: nest_state,
         food_sources: food_states,
-        // particles: vec![], // Ensure old field is removed or empty if needed temporarily
+        pheromones: pheromone_states, // Add pheromones field
     };
 
     // Optional: Log state update for debugging

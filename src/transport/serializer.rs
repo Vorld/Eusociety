@@ -235,7 +235,8 @@ impl OptimizedBinarySerializer {
         let estimated_capacity = header_size
             + vec_len_size + state.ants.len() * ant_size
             + nest_size
-            + vec_len_size + state.food_sources.len() * food_size;
+            + vec_len_size + state.food_sources.len() * food_size
+            + vec_len_size + state.pheromones.len() * (4 + 4 + 4 + 4 + 4); // Add pheromone size estimate
 
         // --- Parallel Serialization Steps ---
 
@@ -297,6 +298,19 @@ impl OptimizedBinarySerializer {
              final_buffer.extend_from_slice(&bincode::serialize(&food.x)?);
              final_buffer.extend_from_slice(&bincode::serialize(&food.y)?);
         }
+
+        // 5. Serialize Pheromones sequentially (similar to food sources)
+        // Serialize pheromone count (as u64 for bincode Vec length prefix)
+        final_buffer.extend_from_slice(&bincode::serialize(&(state.pheromones.len() as u64))?);
+        // Serialize individual pheromones
+        for p in &state.pheromones {
+             final_buffer.extend_from_slice(&bincode::serialize(&p.id)?);
+             final_buffer.extend_from_slice(&bincode::serialize(&p.x)?);
+             final_buffer.extend_from_slice(&bincode::serialize(&p.y)?);
+             final_buffer.extend_from_slice(&bincode::serialize(&p.type_)?);
+             final_buffer.extend_from_slice(&bincode::serialize(&p.strength)?);
+        }
+
 
         Ok(final_buffer)
         // --- End Parallel Serialization Steps ---

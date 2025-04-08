@@ -37,11 +37,13 @@ pub fn handle_boundaries(
             BoundaryBehavior::Bounce => {
                 // Bounce logic
                 if pos.x < 0.0 || pos.x >= width {
-                    vel.dx = -vel.dx;
+                    // TODO: make damping configurable
+                    vel.dx = -vel.dx * 0.50;
                     pos.x = pos.x.clamp(0.0, width); // Clamp position after bounce
                 }
                 if pos.y < 0.0 || pos.y >= height {
-                    vel.dy = -vel.dy;
+                    // TODO: make damping configurable
+                    vel.dy = -vel.dy * 0.50;
                     pos.y = pos.y.clamp(0.0, height); // Clamp position after bounce
                 }
             }

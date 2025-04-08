@@ -64,6 +64,11 @@ class BinaryStateParser {
             Foraging: 0,
             ReturningToNest: 1,
         };
+        // Constants for PheromoneType enum discriminants
+        this.PheromoneType = {
+            FoodTrail: 0,
+            HomeTrail: 1,
+        };
     }
 
 
@@ -196,31 +201,66 @@ class BinaryStateParser {
                 foodSources.push({ id, x, y });
             }
 
-            // --- Final Logging & Check ---
-            // console.log(`Finished parsing. Offset: ${offset}, Buffer Length: ${buffer.byteLength}`); // Keep console clean
-            // Log results only if something seems wrong or for initial debugging
-            if (!nest || foodSources.length === 0) {
-                 console.log(`Parsed Result - Ants: ${ants.length}, Nest: ${nest ? 'Exists' : 'None'}, Food: ${foodSources.length}`);
+            // --- Read Pheromones Vec ---
+            // console.log(`Reading pheromone count at offset ${offset}`);
+            if (offset + 8 > buffer.byteLength) throw new Error("Buffer too small for pheromone count");
+            const pheromoneCountLow = view.getUint32(offset, true); offset += 4;
+            const pheromoneCountHigh = view.getUint32(offset, true); offset += 4;
+            if (pheromoneCountHigh !== 0) console.warn(`Pheromone count exceeds 2^32: ${pheromoneCountHigh}${pheromoneCountLow}`);
+            const pheromoneCount = pheromoneCountLow;
+            // console.log(`Expecting ${pheromoneCount} pheromones. Offset: ${offset}`);
+            const pheromones = [];
+            // id(u32) + x(f32) + y(f32) + type(u32) + strength(f32) = 20 bytes
+            const pheromoneSize = 4 + 4 + 4 + 4 + 4;
+            if (offset + pheromoneCount * pheromoneSize > buffer.byteLength) throw new Error(`Buffer too small for ${pheromoneCount} pheromones`);
+
+            for (let i = 0; i < pheromoneCount; i++) {
+                const id = view.getUint32(offset, true); offset += 4;
+                const x = view.getFloat32(offset, true); offset += 4;
+                const y = view.getFloat32(offset, true); offset += 4;
+                const typeDiscriminant = view.getUint32(offset, true); offset += 4;
+                const strength = view.getFloat32(offset, true); offset += 4;
+
+                let type_;
+                switch (typeDiscriminant) {
+                    case this.PheromoneType.FoodTrail: type_ = 'FoodTrail'; break;
+                    case this.PheromoneType.HomeTrail: type_ = 'HomeTrail'; break;
+                    default: type_ = 'Unknown'; console.warn(`Unknown pheromone type discriminant: ${typeDiscriminant}`);
+                }
+
+                if (isNaN(x) || isNaN(y) || isNaN(strength)) {
+                    console.warn(`Parsed NaN data for pheromone ID ${id}: (${x}, ${y}, ${strength})`);
+                    continue; // Skip invalid pheromone
+                }
+                pheromones.push({ id, x, y, type_, strength });
             }
 
-            // Check if we consumed the whole buffer (optional sanity check)
+
+            // --- Final Logging & Check ---
+            // console.log(`Finished parsing. Offset: ${offset}, Buffer Length: ${buffer.byteLength}`);
+            if (!nest || foodSources.length === 0 || pheromones.length === 0) {
+                 console.log(`Parsed Result - Ants: ${ants.length}, Nest: ${nest ? 'Exists' : 'None'}, Food: ${foodSources.length}, Pheromones: ${pheromones.length}`);
+            }
+
+            // Check if we consumed the whole buffer
             if (offset !== buffer.byteLength) {
                 console.warn(`Parser did not consume entire buffer. Offset: ${offset}, Length: ${buffer.byteLength}`);
             }
 
             return {
-                frame: frameLow, // Use low part
+                frame: frameLow,
                 timestamp,
                 ants,
                 nest,
                 foodSources,
+                pheromones, // Add pheromones to returned state
             };
 
         } catch (e) {
             // Log the specific error and the offset where it occurred
             console.error(`Error parsing binary data at offset ${offset}:`, e.message, e);
-            // Return a default/empty state on error to avoid crashing the renderer
-            return { frame: 0, timestamp: 0, ants: [], nest: null, foodSources: [] };
+            // Return a default/empty state on error
+            return { frame: 0, timestamp: 0, ants: [], nest: null, foodSources: [], pheromones: [] };
         }
     }
 }
@@ -241,8 +281,8 @@ class EusocietyWebGLRenderer {
 
         // View State
         this.view = {
-            worldWidth: 1000.0, // From config
-            worldHeight: 1000.0, // From config
+            worldWidth: 300.0, // From config
+            worldHeight: 300.0, // From config
             viewportX: 0.0, // World coord at center X (CHANGED TO 0,0 to match backend coordinate system)
             viewportY: 0.0, // World coord at center Y (CHANGED TO 0,0 to match backend coordinate system)
             targetViewportX: 0.0, // Also initialize to 0,0
@@ -258,8 +298,10 @@ class EusocietyWebGLRenderer {
         // Data & State - Removing interpolation
         this.latestState = null;   // Latest state received from backend
         this.antPositions = new Float32Array(0); // Buffer for ant data
-        this.nestPosition = new Float32Array(2); // Buffer for nest position
-        this.foodSourcePositions = new Float32Array(0); // Buffer for food source positions
+        this.nestPosition = new Float32Array(2);
+        this.foodSourcePositions = new Float32Array(0);
+        this.foodPheromonePositions = new Float32Array(0); // Buffer for food trail pheromones
+        this.homePheromonePositions = new Float32Array(0); // Buffer for home trail pheromones
 
         // Timing
         this.lastRenderTime = 0;
@@ -304,6 +346,8 @@ class EusocietyWebGLRenderer {
         this.antBuffer = gl.createBuffer();
         this.nestBuffer = gl.createBuffer();
         this.foodBuffer = gl.createBuffer();
+        this.foodPheromoneBuffer = gl.createBuffer(); // Buffer for food trail pheromones
+        this.homePheromoneBuffer = gl.createBuffer(); // Buffer for home trail pheromones
 
         // GL Settings
         gl.useProgram(this.program);
@@ -374,7 +418,8 @@ class EusocietyWebGLRenderer {
             timestamp: newState.timestamp,
             ants: antMap,
             nest: newState.nest,
-            foodSources: foodMap
+            foodSources: foodMap,
+            pheromones: new Map(newState.pheromones.map(p => [p.id, { x: p.x, y: p.y, type_: p.type_, strength: p.strength }])) // Add pheromones Map
         };
 
         // Update walker count display
@@ -439,6 +484,54 @@ class EusocietyWebGLRenderer {
         } else {
             // Clear buffer if no ants
             gl.bindBuffer(gl.ARRAY_BUFFER, this.antBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+        }
+
+        // Update Pheromone Buffers
+        if (this.latestState && this.latestState.pheromones.size > 0) {
+            const foodPheromones = [];
+            const homePheromones = [];
+            for (const [id, p] of this.latestState.pheromones) {
+                if (p.type_ === 'FoodTrail') {
+                    foodPheromones.push(p.x, p.y);
+                } else if (p.type_ === 'HomeTrail') {
+                    homePheromones.push(p.x, p.y);
+                }
+            }
+
+            // Update Food Trail Buffer
+            if (foodPheromones.length > 0) {
+                 if (this.foodPheromonePositions.length < foodPheromones.length) {
+                    this.foodPheromonePositions = new Float32Array(foodPheromones.length);
+                 }
+                 this.foodPheromonePositions.set(foodPheromones);
+                 const bufferDataView = new Float32Array(this.foodPheromonePositions.buffer, 0, foodPheromones.length);
+                 gl.bindBuffer(gl.ARRAY_BUFFER, this.foodPheromoneBuffer);
+                 gl.bufferData(gl.ARRAY_BUFFER, bufferDataView, gl.DYNAMIC_DRAW);
+            } else {
+                 gl.bindBuffer(gl.ARRAY_BUFFER, this.foodPheromoneBuffer);
+                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+            }
+
+            // Update Home Trail Buffer
+            if (homePheromones.length > 0) {
+                 if (this.homePheromonePositions.length < homePheromones.length) {
+                    this.homePheromonePositions = new Float32Array(homePheromones.length);
+                 }
+                 this.homePheromonePositions.set(homePheromones);
+                 const bufferDataView = new Float32Array(this.homePheromonePositions.buffer, 0, homePheromones.length);
+                 gl.bindBuffer(gl.ARRAY_BUFFER, this.homePheromoneBuffer);
+                 gl.bufferData(gl.ARRAY_BUFFER, bufferDataView, gl.DYNAMIC_DRAW);
+            } else {
+                 gl.bindBuffer(gl.ARRAY_BUFFER, this.homePheromoneBuffer);
+                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+            }
+
+        } else {
+            // Clear buffers if no pheromones
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.foodPheromoneBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.homePheromoneBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
         }
     }
@@ -556,6 +649,29 @@ class EusocietyWebGLRenderer {
             gl.bindBuffer(gl.ARRAY_BUFFER, this.foodBuffer);
             gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
             gl.drawArrays(gl.POINTS, 0, foodCount);
+        }
+
+        // --- Draw Pheromones (before ants) ---
+        const foodPheromoneCount = this.foodPheromonePositions.length / 2;
+        if (foodPheromoneCount > 0) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.foodPheromoneBuffer);
+            gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(this.positionLocation);
+            // FoodTrail: Blue, semi-transparent
+            gl.uniform4f(this.colorLocation, 0.2, 0.5, 1.0, 0.5);
+            gl.uniform1f(this.pointSizeLocation, 3.0); // Smaller size
+            gl.drawArrays(gl.POINTS, 0, foodPheromoneCount);
+        }
+
+        const homePheromoneCount = this.homePheromonePositions.length / 2;
+        if (homePheromoneCount > 0) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.homePheromoneBuffer);
+            gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(this.positionLocation);
+            // HomeTrail: Orange/Yellow, semi-transparent
+            gl.uniform4f(this.colorLocation, 1.0, 0.7, 0.1, 0.5);
+            gl.uniform1f(this.pointSizeLocation, 3.0); // Smaller size
+            gl.drawArrays(gl.POINTS, 0, homePheromoneCount);
         }
 
         // --- Draw Ants ---

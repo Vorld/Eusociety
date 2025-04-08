@@ -1,7 +1,7 @@
 //! System responsible for spawning the initial population of ants.
 
 use bevy_ecs::prelude::*;
-use crate::simulation::components::{Ant, Position, Velocity, ParticleId, AntState};
+use crate::simulation::components::{Ant, Position, Velocity, ParticleId, AntState, PheromoneInfluence}; // Added PheromoneInfluence
 use crate::simulation::resources::SimulationConfigResource;
 use rand::{thread_rng, Rng};
 
@@ -36,6 +36,7 @@ pub fn spawn_ants_system(
             Velocity { dx, dy },
             ParticleId(i), // Assign unique ID
             AntState::Foraging, // Start in Foraging state
+            PheromoneInfluence::default(), // Initialize with zero influence
         ));
     }
 }

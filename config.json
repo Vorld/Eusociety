@@ -1,13 +1,13 @@
 {
   "simulation": {
-    "particle_count": 100000,
-    "world_dimensions": [1000.0, 1000.0],
+    "particle_count": 200,
+    "world_dimensions": [300.0, 300.0],
     "max_velocity": 100.0,
     "velocity_randomization_factor": 150.0,
     "velocity_damping_factor": 0.999,
     "boundary_behavior": "Bounce",
     "frame_rate": 60,
-    "food_sources_count": 10000
+    "food_sources_count": 1000
   },
   "transport": {
     "delta_compression": false,

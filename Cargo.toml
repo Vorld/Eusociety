@@ -18,6 +18,9 @@ thiserror = "1.0"
 # Randomization
 rand = "0.8"
 
+# Vector processing
+glam = "0.30.1"
+
 # Entity Component System
 bevy_ecs = "0.15.3"
 

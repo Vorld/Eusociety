@@ -50,13 +50,13 @@ impl Rect {
     }
 
     /// Checks if this Rect contains a given Position.
-    /// Note: Uses inclusive min and exclusive max for consistency during subdivision.
+    /// Note: Uses inclusive min and inclusive max now for consistency with boundary handling.
     #[inline]
     pub fn contains(&self, point: &Position) -> bool {
         point.x >= self.x_min
-            && point.x < self.x_max
+            && point.x <= self.x_max // Changed to <=
             && point.y >= self.y_min
-            && point.y < self.y_max
+            && point.y <= self.y_max // Changed to <=
     }
 
     /// Checks if this Rect intersects with another Rect.
@@ -122,9 +122,11 @@ impl QuadTreeNode {
     /// Returns true if insertion was successful, false otherwise (e.g., point outside boundary).
     fn insert(&mut self, entity: Entity, position: Position, current_depth: usize) -> bool {
         // Check if the point is within the node's boundary
-        // Use >= min and < max for contains check
-        if !(position.x >= self.boundary().x_min && position.x < self.boundary().x_max &&
-             position.y >= self.boundary().y_min && position.y < self.boundary().y_max) {
+        // Use >= min and <= max for contains check (consistent with Rect::contains)
+        if !(position.x >= self.boundary().x_min && position.x <= self.boundary().x_max && // Changed to <=
+             position.y >= self.boundary().y_min && position.y <= self.boundary().y_max) { // Changed to <=
+             // Optional: Add a specific warning if it's *exactly* on the boundary but outside the root?
+             // This case should be rare if the root boundary is correct.
             return false; // Point is outside this node's area
         }
 
@@ -310,6 +312,53 @@ impl FoodQuadtree {
         self.root = QuadTreeNode::new_leaf(self.root.boundary());
     }
 }
+
+
+// --- Pheromone Quadtree ---
+
+/// The Bevy resource holding the Pheromone Quadtree root.
+#[derive(Resource, Debug)]
+pub struct PheromoneQuadtree {
+    root: QuadTreeNode,
+}
+
+impl PheromoneQuadtree {
+    /// Creates a new, empty PheromoneQuadtree for the given world boundary.
+    pub fn new(world_boundary: Rect) -> Self {
+        info!("Creating new PheromoneQuadtree with boundary: {:?}", world_boundary);
+        Self {
+            root: QuadTreeNode::new_leaf(world_boundary),
+        }
+    }
+
+    /// Inserts an entity with its position into the Quadtree.
+    pub fn insert(&mut self, entity: Entity, position: Position) {
+        if !self.root.insert(entity, position, 0) {
+            tracing::warn!(?entity, ?position, "Attempted to insert pheromone outside Quadtree root boundary");
+        }
+    }
+
+    /// Queries the Quadtree for all points within the given rectangular range.
+    /// Returns a Vec containing references to the (Entity, Position) tuples found.
+    pub fn query_range<'a>(&'a self, range: &Rect) -> Vec<&'a (Entity, Position)> {
+        let mut found = Vec::new();
+        self.root.query_range(range, &mut found);
+        found
+    }
+
+    /// Removes a specific entity at a given position from the Quadtree.
+    /// Returns true if the entity was found and removed, false otherwise.
+    pub fn remove(&mut self, entity: Entity, position: &Position) -> bool {
+        self.root.remove(entity, position)
+    }
+
+    /// Clears all points from the Quadtree, resetting it to an empty leaf node.
+    pub fn clear(&mut self) {
+        info!("Clearing PheromoneQuadtree");
+        self.root = QuadTreeNode::new_leaf(self.root.boundary());
+    }
+}
+
 
 // --- Systems ---
 

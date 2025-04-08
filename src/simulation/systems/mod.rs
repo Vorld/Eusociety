@@ -18,7 +18,7 @@ pub mod transport_integration;
 // Add new modules for ant logic:
 pub mod ant_logic;
 pub mod ant_movement;
-// pub mod pheromones; // For Phase 2
+pub mod pheromones; // For Phase 2
 
 // Re-export the primary system function from each module for convenient use in schedule setup.
 pub use movement::move_particles;
