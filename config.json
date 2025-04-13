@@ -1,16 +1,16 @@
 {
   "simulation": {
-    "particle_count": 1000,
+    "particle_count": 300,
     "world_dimensions": [300.0, 300.0],
     "max_velocity": 30.0,
-    "velocity_randomization_factor": 150.0,
+    "velocity_randomization_factor": 100.0,
     "velocity_damping_factor": 0.999,
     "boundary_behavior": "Bounce",
     "frame_rate": 60,
-    "food_sources_count": 10000,
+    "food_sources_count": 1000,
     "pheromone_max_strength": 1.0,
     "pheromone_min_strength": 0.1,
-    "pheromone_max_time_away": 30.0,
+    "pheromone_max_time_away": 20.0,
     "pheromone_linear_decay_amount": 0.001,
     "pheromone_min_strength_threshold": 0.1
   },

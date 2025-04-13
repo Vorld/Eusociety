@@ -13,9 +13,9 @@ use crate::simulation::spatial::{PheromoneQuadtree, Rect};
 
 // Constants for Pheromone behavior
 // TODO: Load these from config later
-const PHEROMONE_DEPOSIT_INTERVAL_SECS: f32 = 1.0; // How often ants *can* deposit
-const PHEROMONE_DEPOSIT_PROBABILITY: f64 = 0.9; // Chance to deposit each interval check
-const PHEROMONE_SENSE_RADIUS: f32 = 25.0; // How far ants can sense pheromones
+const PHEROMONE_DEPOSIT_INTERVAL_SECS: f32 = 1; // How often ants *can* deposit
+const PHEROMONE_DEPOSIT_PROBABILITY: f64 = 1.0; // Chance to deposit each interval check
+const PHEROMONE_SENSE_RADIUS: f32 = 50.0; // How far ants can sense pheromones
 
 // --- Helper Resource for Deposit Timing ---
 
@@ -183,9 +183,8 @@ pub fn pheromone_follow_system(
             return; // No pheromones nearby, nothing to do
         }
 
-        // 4. Calculate weighted average position of relevant pheromones
-        let mut weighted_sum_position = Vec2::ZERO;
-        let mut total_strength = 0.0;
+        // 4. Calculate influence based on weighted sum of direction vectors (strength^2 weighting)
+        let mut weighted_direction_sum = Vec2::ZERO;
         let ant_vec2 = ant_pos.as_vec2(); // Convert ant position once
 
         for &(pheromone_entity, pheromone_pos) in nearby_pheromones {
@@ -199,9 +198,15 @@ pub fn pheromone_follow_system(
 
                 // Check if the pheromone is the type the ant is interested in
                 if pheromone.type_ == target_pheromone_type {
-                    // Accumulate weighted position and total strength
-                    weighted_sum_position += pheromone_pos.as_vec2() * pheromone.strength;
-                    total_strength += pheromone.strength;
+                    // Calculate direction vector from ant to pheromone
+                    let direction_to_pheromone = pheromone_pos.as_vec2() - ant_vec2;
+
+                    // Calculate weight (strength squared)
+                    let weight = pheromone.strength.powf(2.0); // Use strength squared
+
+                    // Add weighted, normalized direction to the sum
+                    // Normalizing ensures direction matters most, strength^2 scales the magnitude
+                    weighted_direction_sum += direction_to_pheromone.normalize_or_zero() * weight;
                 }
             } else {
                 // This could happen if a pheromone was despawned between quadtree query and component lookup
@@ -209,13 +214,9 @@ pub fn pheromone_follow_system(
             }
         }
 
-        // Calculate the final influence vector
-        let mut final_influence = Vec2::ZERO;
-        if total_strength > 0.0 {
-            let average_position = weighted_sum_position / total_strength;
-            // Vector from ant towards the average pheromone position
-            final_influence = (average_position - ant_vec2).normalize_or_zero();
-        }
+        // Calculate the final influence vector by normalizing the weighted sum
+        // If the sum is zero (no valid pheromones found or vectors cancelled out), influence remains zero.
+        let final_influence = weighted_direction_sum.normalize_or_zero();
 
         // 5. Normalize the resultant vector (Optional: Removing this makes magnitude depend on strength/density)
         // resultant_vector = resultant_vector.normalize_or_zero();
