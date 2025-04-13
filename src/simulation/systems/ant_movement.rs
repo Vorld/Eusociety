@@ -8,7 +8,7 @@ use crate::simulation::resources::{SimulationConfigResource, Time};
 use rand::{thread_rng, Rng};
 
 // TODO: Load from config?
-const PHEROMONE_INFLUENCE_WEIGHT: f32 = 50.0; // How strongly pheromones affect direction (adjust this!)
+const PHEROMONE_INFLUENCE_WEIGHT: f32 = 25.0; // How strongly pheromones affect direction (adjust this!)
 
 /// System that adjusts ant velocities based on state, random walk, and pheromone influence.
 pub fn ant_movement_system(

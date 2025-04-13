@@ -44,9 +44,13 @@ pub struct ParticleId(
 
 // --- Ant Simulation Components ---
 
-/// Marker component identifying an entity as an Ant.
+/// Component identifying an entity as an Ant and tracking its state relevant to pheromone deposition.
 #[derive(Component, Debug, Clone, Copy)]
-pub struct Ant;
+pub struct Ant {
+    /// Time elapsed (in seconds) since the ant last visited its relevant source
+    /// (Nest for Foraging state, FoodSource for ReturningToNest state).
+    pub time_since_last_source: f32,
+}
 
 /// Represents the behavioral state of an Ant.
 /// Derives Serialize for sending state to the frontend.

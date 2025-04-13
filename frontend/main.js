@@ -7,11 +7,16 @@ const walkerCountSpan = document.getElementById('walkerCount');
 // --- Shaders ---
 const vertexShaderSource = `#version 300 es
     in vec2 a_position; // World coordinates
+    in float a_strength; // Pheromone strength
 
     uniform vec2 u_resolution; // Canvas resolution (pixels)
     uniform vec2 u_viewport_center; // World coordinates at the center of the viewport
     uniform float u_zoom; // Zoom level
     uniform float u_point_size;
+    uniform int u_use_strength_alpha; // NEW: Control flag (changed to int)
+
+    out float v_strength; // Pass strength to fragment shader
+    flat out int v_use_strength_alpha; // NEW: Pass flag as int (flat to avoid interpolation)
 
     void main() {
         // Calculate visible world dimensions based on canvas size and zoom
@@ -33,12 +38,16 @@ const vertexShaderSource = `#version 300 es
 
         // Scale point size by zoom level
         gl_PointSize = u_point_size * u_zoom;
+        v_strength = a_strength; // Pass strength through
+        v_use_strength_alpha = u_use_strength_alpha; // Pass flag through
     }
 `;
 
 const fragmentShaderSource = `#version 300 es
     precision mediump float;
     uniform vec4 u_color;
+    in float v_strength; // Receive strength from vertex shader
+    flat in int v_use_strength_alpha; // NEW: Receive flag as int
 
     out vec4 outColor; // Output variable for fragment color
 
@@ -51,7 +60,13 @@ const fragmentShaderSource = `#version 300 es
         if (alpha <= 0.0) {
              discard; // Discard pixels outside the circle
         }
-        outColor = vec4(u_color.rgb, u_color.a * alpha);
+        // Modulate alpha by strength ONLY if the flag is set
+        float final_alpha = alpha; // Start with circle alpha
+        if (v_use_strength_alpha == 1) { // Check if flag is 1 (true)
+            float strength_alpha = clamp(v_strength, 0.0, 1.0);
+            final_alpha *= strength_alpha; // Apply strength alpha only if requested
+        }
+        outColor = vec4(u_color.rgb, u_color.a * final_alpha);
     }
 `;
 
@@ -327,18 +342,23 @@ class EusocietyWebGLRenderer {
         const fragmentShader = this.createShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
         this.program = this.createProgram(vertexShader, fragmentShader);
 
-        // Locations
+        // Attribute locations
         this.positionLocation = gl.getAttribLocation(this.program, 'a_position');
+        this.strengthLocation = gl.getAttribLocation(this.program, 'a_strength'); // New attribute location
+
+        // Uniform locations
         this.resolutionLocation = gl.getUniformLocation(this.program, 'u_resolution');
-        this.viewportCenterLocation = gl.getUniformLocation(this.program, 'u_viewport_center'); // Changed from viewportOrigin
+        this.viewportCenterLocation = gl.getUniformLocation(this.program, 'u_viewport_center');
         this.zoomLocation = gl.getUniformLocation(this.program, 'u_zoom');
         this.pointSizeLocation = gl.getUniformLocation(this.program, 'u_point_size');
         this.colorLocation = gl.getUniformLocation(this.program, 'u_color');
+        this.useStrengthAlphaLocation = gl.getUniformLocation(this.program, 'u_use_strength_alpha'); // NEW uniform location
 
         // Check if locations are valid
-        if (this.positionLocation === -1 || !this.resolutionLocation || !this.viewportCenterLocation || !this.zoomLocation || !this.pointSizeLocation || !this.colorLocation) {
-             console.error("Failed to get one or more shader locations!");
-             // Optionally throw an error or handle appropriately
+        if (this.positionLocation === -1 || this.strengthLocation === -1 || // Check new location
+            !this.resolutionLocation || !this.viewportCenterLocation || !this.zoomLocation ||
+            !this.pointSizeLocation || !this.colorLocation || !this.useStrengthAlphaLocation) { // Check new location
+             console.error("Failed to get one or more shader attribute or uniform locations!");
         }
 
         // Buffer
@@ -492,10 +512,11 @@ class EusocietyWebGLRenderer {
             const foodPheromones = [];
             const homePheromones = [];
             for (const [id, p] of this.latestState.pheromones) {
+                // Store x, y, and strength for each pheromone
                 if (p.type_ === 'FoodTrail') {
-                    foodPheromones.push(p.x, p.y);
+                    foodPheromones.push(p.x, p.y, p.strength);
                 } else if (p.type_ === 'HomeTrail') {
-                    homePheromones.push(p.x, p.y);
+                    homePheromones.push(p.x, p.y, p.strength);
                 }
             }
 
@@ -633,6 +654,7 @@ class EusocietyWebGLRenderer {
         gl.enableVertexAttribArray(this.positionLocation);
 
         // --- Draw Nest ---
+        gl.uniform1i(this.useStrengthAlphaLocation, 0); // Set flag to false (0) for nest
         if (this.latestState && this.latestState.nest) {
             gl.uniform1f(this.pointSizeLocation, 10.0); // Larger size for nest
             gl.uniform4f(this.colorLocation, 0.2, 0.2, 0.8, 1.0); // Blue nest
@@ -642,6 +664,7 @@ class EusocietyWebGLRenderer {
         }
 
         // --- Draw Food Sources ---
+        gl.uniform1i(this.useStrengthAlphaLocation, 0); // Set flag to false (0) for food
         if (this.latestState && this.latestState.foodSources.size > 0) {
             const foodCount = this.latestState.foodSources.size;
             gl.uniform1f(this.pointSizeLocation, 5.0); // Medium size for food
@@ -652,29 +675,41 @@ class EusocietyWebGLRenderer {
         }
 
         // --- Draw Pheromones (before ants) ---
-        const foodPheromoneCount = this.foodPheromonePositions.length / 2;
+        gl.uniform1i(this.useStrengthAlphaLocation, 1); // Set flag to true (1) for pheromones
+        const foodPheromoneCount = this.foodPheromonePositions.length / 3; // 3 components: x, y, strength
         if (foodPheromoneCount > 0) {
             gl.bindBuffer(gl.ARRAY_BUFFER, this.foodPheromoneBuffer);
-            gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
             gl.enableVertexAttribArray(this.positionLocation);
-            // FoodTrail: Blue, semi-transparent
-            gl.uniform4f(this.colorLocation, 0.2, 0.5, 1.0, 0.5);
+            gl.enableVertexAttribArray(this.strengthLocation); // Enable strength attribute
+            // Position attribute: 2 components (x, y), stride = 3 floats * 4 bytes/float, offset = 0
+            gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 3 * 4, 0);
+            // Strength attribute: 1 component (strength), stride = 3 floats * 4 bytes/float, offset = 2 floats * 4 bytes/float
+            gl.vertexAttribPointer(this.strengthLocation, 1, gl.FLOAT, false, 3 * 4, 2 * 4);
+            // FoodTrail: Blue - Opacity will be modulated by strength in shader
+            gl.uniform4f(this.colorLocation, 0.2, 0.5, 1.0, 1.0); // Set base alpha to 1.0
             gl.uniform1f(this.pointSizeLocation, 3.0); // Smaller size
-            gl.drawArrays(gl.POINTS, 0, foodPheromoneCount);
+            gl.drawArrays(gl.POINTS, 0, foodPheromoneCount); // Use the correct count
+            gl.disableVertexAttribArray(this.strengthLocation); // Disable strength attribute after use
         }
 
-        const homePheromoneCount = this.homePheromonePositions.length / 2;
+        const homePheromoneCount = this.homePheromonePositions.length / 3; // 3 components: x, y, strength
         if (homePheromoneCount > 0) {
             gl.bindBuffer(gl.ARRAY_BUFFER, this.homePheromoneBuffer);
-            gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
             gl.enableVertexAttribArray(this.positionLocation);
-            // HomeTrail: Orange/Yellow, semi-transparent
-            gl.uniform4f(this.colorLocation, 1.0, 0.7, 0.1, 0.5);
+            gl.enableVertexAttribArray(this.strengthLocation); // Enable strength attribute
+            // Position attribute: 2 components (x, y), stride = 3 floats * 4 bytes/float, offset = 0
+            gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 3 * 4, 0);
+            // Strength attribute: 1 component (strength), stride = 3 floats * 4 bytes/float, offset = 2 floats * 4 bytes/float
+            gl.vertexAttribPointer(this.strengthLocation, 1, gl.FLOAT, false, 3 * 4, 2 * 4);
+            // HomeTrail: Orange/Yellow - Opacity will be modulated by strength in shader
+            gl.uniform4f(this.colorLocation, 1.0, 0.7, 0.1, 1.0); // Set base alpha to 1.0
             gl.uniform1f(this.pointSizeLocation, 3.0); // Smaller size
-            gl.drawArrays(gl.POINTS, 0, homePheromoneCount);
+            gl.drawArrays(gl.POINTS, 0, homePheromoneCount); // Use the correct count
+            gl.disableVertexAttribArray(this.strengthLocation); // Disable strength attribute after use
         }
 
         // --- Draw Ants ---
+        gl.uniform1i(this.useStrengthAlphaLocation, 0); // Set flag to false (0) for ants
         // We need to draw ants potentially in two batches based on state for different colors
         gl.uniform1f(this.pointSizeLocation, 2.0); // Base ant size
         gl.bindBuffer(gl.ARRAY_BUFFER, this.antBuffer);
@@ -733,7 +768,7 @@ try {
     const binaryParser = new BinaryStateParser(); // Use renamed parser
 
     // --- WebSocket ---
-    const socketUrl = 'ws://127.0.0.1:8090'; // Make sure this matches backend config
+    const socketUrl = 'ws://127.0.0.1:8080'; // Make sure this matches backend config
     let socket = null;
 
     function connectWebSocket() {

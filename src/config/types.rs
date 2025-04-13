@@ -31,6 +31,17 @@ pub struct SimulationConfig {
     pub frame_rate: u32,
     /// Number of food sources to spawn in the environment.
     pub food_sources_count: usize,
+    // --- Pheromone Configuration ---
+    /// Maximum strength of a freshly deposited pheromone.
+    pub pheromone_max_strength: f32,
+    /// Minimum strength a pheromone decays to before potentially being removed (if time-based decay is used).
+    pub pheromone_min_strength: f32,
+    /// Time (in seconds) it takes for a pheromone's strength to decay from max to min due to time away from source.
+    pub pheromone_max_time_away: f32,
+    /// Amount of strength subtracted linearly per second during decay.
+    pub pheromone_linear_decay_amount: f32,
+    /// Strength threshold below which pheromones are despawned.
+    pub pheromone_min_strength_threshold: f32,
 }
 
 /// Transport-specific configuration parameters.

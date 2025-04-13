@@ -7,6 +7,7 @@ use tracing::{warn, trace}; // Removed unused 'error' import
 
 // Import simulation components including our custom Timer
 use crate::simulation::components::{Position, Ant, AntState, Pheromone, PheromoneType, PheromoneInfluence, Timer};
+use crate::simulation::resources::SimulationConfigResource; // Import config resource
 // Import Time resource
 use crate::simulation::spatial::{PheromoneQuadtree, Rect};
 
@@ -14,16 +15,13 @@ use crate::simulation::spatial::{PheromoneQuadtree, Rect};
 // TODO: Load these from config later
 const PHEROMONE_DEPOSIT_INTERVAL_SECS: f32 = 1.0; // How often ants *can* deposit
 const PHEROMONE_DEPOSIT_PROBABILITY: f64 = 0.9; // Chance to deposit each interval check
-const PHEROMONE_INITIAL_STRENGTH: f32 = 1.0;
-const PHEROMONE_DECAY_DURATION_SECS: f32 = 15.0; // Seconds until pheromone fully decays
-const PHEROMONE_SENSE_RADIUS: f32 = 30.0; // How far ants can sense pheromones
-// const PHEROMONE_INFLUENCE_WEIGHT: f32 = 1.5; // Weight applied in movement system
+const PHEROMONE_SENSE_RADIUS: f32 = 25.0; // How far ants can sense pheromones
 
 // --- Helper Resource for Deposit Timing ---
 
 // Use a resource for the deposit interval timer
 #[derive(Resource)]
-pub struct PheromoneDepositTimer(Timer); // Use our Timer (Made public)
+pub struct PheromoneDepositTimer(crate::simulation::components::Timer); // Use our Timer (Made public), fully qualified path
 
 impl Default for PheromoneDepositTimer {
     fn default() -> Self {
@@ -43,18 +41,18 @@ pub fn setup_pheromone_timer(mut commands: Commands) {
 /// System to handle ants depositing pheromones periodically.
 pub fn pheromone_deposit_system(
     mut commands: Commands,
-    ant_query: Query<(&Position, &AntState), With<Ant>>,
+    ant_query: Query<(&Position, &AntState, &Ant)>, // Add &Ant
     mut pheromone_quadtree: ResMut<PheromoneQuadtree>,
     time: Res<crate::simulation::resources::Time>,
     mut deposit_timer: ResMut<PheromoneDepositTimer>,
-    // config parameter removed
+    config: Res<SimulationConfigResource>, // Add config resource
 ) {
     // world_bounds calculation removed
     deposit_timer.0.tick(time.delta_seconds); // Access field directly
 
     if deposit_timer.0.just_finished() {
         let mut rng = thread_rng();
-        for (position, state) in ant_query.iter() {
+        for (position, state, ant) in ant_query.iter() { // Add ant
             // Boundary check removed here - Quadtree insert handles it now with inclusive bounds.
 
             // Random chance to deposit to avoid perfect lines
@@ -64,20 +62,23 @@ pub fn pheromone_deposit_system(
                     AntState::ReturningToNest => PheromoneType::FoodTrail, // Returning ants leave trail TO food
                 };
 
-                // Spawn the pheromone entity
+                // Calculate strength based on time since last source visit (linear decay using config)
+                let time_factor = (ant.time_since_last_source / config.0.pheromone_max_time_away).clamp(0.0, 1.0);
+                let current_strength = (config.0.pheromone_max_strength - config.0.pheromone_min_strength) * (1.0 - time_factor) + config.0.pheromone_min_strength;
+
+                // Spawn the pheromone entity (without Timer component)
                 let pheromone_entity = commands.spawn((
                     Pheromone {
                         type_: pheromone_type,
-                        strength: PHEROMONE_INITIAL_STRENGTH,
+                        strength: current_strength, // Use calculated strength
                     },
                     *position, // Copy the ant's position
-                    // Use the non-repeating constructor from our Timer
-                    crate::simulation::components::Timer::from_seconds(PHEROMONE_DECAY_DURATION_SECS),
+                    // Timer component removed - decay handled differently now
                 )).id(); // Get the entity ID
 
                 // Insert into quadtree - insert doesn't return bool, internal logic handles warnings
                 pheromone_quadtree.insert(pheromone_entity, *position);
-                trace!(entity = ?pheromone_entity, ?position, ?pheromone_type, "Deposited pheromone.");
+                trace!(entity = ?pheromone_entity, ?position, ?pheromone_type, strength = current_strength, "Deposited pheromone.");
             }
         }
     }
@@ -87,9 +88,10 @@ pub fn pheromone_deposit_system(
 pub fn pheromone_decay_system(
     mut commands: Commands,
     // Fully qualify Timer component in Query
-    mut query: Query<(Entity, &mut Pheromone, &mut crate::simulation::components::Timer, &Position)>,
+    mut query: Query<(Entity, &mut Pheromone, &Position)>, // Removed Timer
     mut pheromone_quadtree: ResMut<PheromoneQuadtree>,
-    time: Res<crate::simulation::resources::Time>, // Fully qualify Time resource
+    time: Res<crate::simulation::resources::Time>,
+    config: Res<SimulationConfigResource>, // Add config resource
 ) {
     // Use parallel iterator for potentially many pheromones
     // query.par_iter_mut().for_each(|(entity, mut pheromone, mut timer, position)| {
@@ -124,14 +126,16 @@ pub fn pheromone_decay_system(
     // --- Single-threaded despawn loop ---
     // This is less efficient but safer with Commands.
     let mut entities_to_despawn = Vec::new(); // Collect entities to despawn
-    for (entity, mut pheromone, mut timer, position) in query.iter_mut() {
-         // Tick timer first
-         timer.tick(time.delta_seconds); // Access field directly
+    let delta_time = time.delta_seconds; // Get delta time once
 
-         // Update strength based on timer progress (linear decay)
-         pheromone.strength = PHEROMONE_INITIAL_STRENGTH * (1.0 - timer.fraction());
+    for (entity, mut pheromone, position) in query.iter_mut() {
+         // Calculate linear decay based on config amount
+         let decay_amount = config.0.pheromone_linear_decay_amount * delta_time;
+         pheromone.strength -= decay_amount;
+         pheromone.strength = pheromone.strength.max(0.0); // Clamp strength at 0
 
-         if timer.finished() {
+         // Check if strength is below threshold for despawning (using config)
+         if pheromone.strength < config.0.pheromone_min_strength_threshold {
              // Attempt to remove from quadtree. Failure is not critical here, just log.
              if !pheromone_quadtree.remove(entity, position) {
                  warn!(?entity, ?position, "Pheromone entity not found in quadtree during decay removal (single-threaded).");
@@ -179,14 +183,12 @@ pub fn pheromone_follow_system(
             return; // No pheromones nearby, nothing to do
         }
 
-        // 4. Calculate resultant vector
-        let mut resultant_vector = Vec2::ZERO;
+        // 4. Calculate weighted average position of relevant pheromones
+        let mut weighted_sum_position = Vec2::ZERO;
+        let mut total_strength = 0.0;
         let ant_vec2 = ant_pos.as_vec2(); // Convert ant position once
 
         for &(pheromone_entity, pheromone_pos) in nearby_pheromones {
-             // Avoid self-influence if an ant somehow queried itself (unlikely here)
-             // if ant_entity == pheromone_entity { continue; }
-
             // Get Pheromone component data
             if let Ok(pheromone) = pheromone_query.get(pheromone_entity) {
                 // Determine relevant pheromone type based on ant state
@@ -197,21 +199,9 @@ pub fn pheromone_follow_system(
 
                 // Check if the pheromone is the type the ant is interested in
                 if pheromone.type_ == target_pheromone_type {
-                    let pheromone_vec2 = pheromone_pos.as_vec2();
-                    let direction = pheromone_vec2 - ant_vec2; // Vector from ant TO pheromone
-                    let distance_sq = direction.length_squared();
-
-                    // Avoid division by zero and ignore very close pheromones (optional)
-                    if distance_sq > 5.0 {
-                        // Weight by strength and inverse distance squared (dampened)
-                        // Adding 1.0 to the denominator prevents division by zero and reduces
-                        // the overwhelming influence of extremely close pheromones.
-                        let weight = pheromone.strength / (distance_sq + 1.0);
-                        // Use the *normalized* direction vector scaled by the dampened weight.
-                        // Each pheromone contributes direction based on its weighted influence,
-                        // preventing close pheromones from dominating solely due to vector magnitude.
-                        resultant_vector += direction.normalize_or_zero() * weight;
-                    }
+                    // Accumulate weighted position and total strength
+                    weighted_sum_position += pheromone_pos.as_vec2() * pheromone.strength;
+                    total_strength += pheromone.strength;
                 }
             } else {
                 // This could happen if a pheromone was despawned between quadtree query and component lookup
@@ -219,18 +209,23 @@ pub fn pheromone_follow_system(
             }
         }
 
+        // Calculate the final influence vector
+        let mut final_influence = Vec2::ZERO;
+        if total_strength > 0.0 {
+            let average_position = weighted_sum_position / total_strength;
+            // Vector from ant towards the average pheromone position
+            final_influence = (average_position - ant_vec2).normalize_or_zero();
+        }
+
         // 5. Normalize the resultant vector (Optional: Removing this makes magnitude depend on strength/density)
         // resultant_vector = resultant_vector.normalize_or_zero();
 
-        // 6. Inversion Logic for ReturningToNest state
-        if *ant_state == AntState::ReturningToNest {
-            // Ants returning home follow HomeTrail pheromones, but move *away* from their source direction
-            // The calculated vector points towards HomeTrail pheromones. Inverting it points away.
-            // resultant_vector = -resultant_vector;
-        }
+        // 6. Inversion logic removed - Ants now follow the gradient directly.
+        //    Foraging ants follow FoodTrail (vector points towards food).
+        //    Returning ants follow HomeTrail (vector points towards home).
 
         // 7. Store the final influence vector
-        influence.vector = resultant_vector;
+        influence.vector = final_influence;
 
         if influence.vector != Vec2::ZERO {
              trace!(?ant_entity, state = ?ant_state, influence = ?influence.vector, "Calculated pheromone influence");

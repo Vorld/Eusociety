@@ -11,7 +11,7 @@ const INTERACTION_RADIUS_SQ: f32 = INTERACTION_RADIUS * INTERACTION_RADIUS; // U
 /// System that updates ant states based on proximity to food and the nest.
 pub fn ant_state_machine_system(
     mut commands: Commands,
-    mut query_ants: Query<(Entity, &Position, &mut AntState), With<Ant>>,
+    mut query_ants: Query<(Entity, &Position, &mut AntState, &mut Ant)>, // Add &mut Ant
     // query_food: Query<(Entity, &Position), With<FoodSource>>, // REMOVED - Use Quadtree instead
     mut food_quadtree: ResMut<FoodQuadtree>, // ADDED - Quadtree resource (mutable for removal)
     query_nest: Query<&Position, With<Nest>>, // Assuming one nest
@@ -31,7 +31,8 @@ pub fn ant_state_machine_system(
     let mut ants_found_food: Vec<(Entity, Entity, Position)> = Vec::new();
     let mut ants_reached_nest: Vec<Entity> = Vec::new(); // ADDED: Store ants reaching nest
 
-    for (ant_entity, ant_pos, ant_state) in query_ants.iter() { // Use iter() as we modify state later
+    // Iterate immutably first to check states and collect changes
+    for (ant_entity, ant_pos, ant_state, _ant) in query_ants.iter() {
         match *ant_state {
             AntState::Foraging => {
                 // Define the query area around the ant
@@ -93,9 +94,10 @@ pub fn ant_state_machine_system(
             // If removal was successful, despawn the entity and update ant state
             commands.entity(food_entity).despawn();
 
-            // Get the ant's state mutably now
-            if let Ok((_, _, mut state)) = query_ants.get_mut(ant_entity) {
+            // Get the ant's state and timer mutably now
+            if let Ok((_, _, mut state, mut ant)) = query_ants.get_mut(ant_entity) {
                 *state = AntState::ReturningToNest;
+                ant.time_since_last_source = 0.0; // Reset timer
                 trace!(ant_id = ?ant_entity, food_id = ?food_entity, "Picked up food (Quadtree), state -> ReturningToNest");
             } else {
                  trace!(ant_id = ?ant_entity, food_id = ?food_entity, "Ant not found for state update after finding food?");
@@ -108,8 +110,9 @@ pub fn ant_state_machine_system(
 
     // Process ants that reached the nest
     for ant_entity in ants_reached_nest {
-        if let Ok((_, _, mut state)) = query_ants.get_mut(ant_entity) {
+        if let Ok((_, _, mut state, mut ant)) = query_ants.get_mut(ant_entity) {
             *state = AntState::Foraging;
+            ant.time_since_last_source = 0.0; // Reset timer
             trace!(ant_id = ?ant_entity, "Reached nest, state -> Foraging");
         } else {
             trace!(ant_id = ?ant_entity, "Ant not found for state update after reaching nest?");
@@ -123,4 +126,18 @@ fn distance_squared(pos1: &Position, pos2: &Position) -> f32 {
     let dx = pos1.x - pos2.x;
     let dy = pos1.y - pos2.y;
     dx * dx + dy * dy
+}
+// --- New System for Updating Ant Timers ---
+
+/// System to increment the `time_since_last_source` for all ants each frame.
+/// This should run *before* pheromone deposition.
+pub fn update_ant_timers_system(
+    mut query_ants: Query<&mut Ant>,
+    time: Res<crate::simulation::resources::Time>, // Use the fully qualified Time resource
+) {
+    let delta = time.delta_seconds; // Get delta time once
+    // Consider parallelization if performance becomes an issue
+    for mut ant in query_ants.iter_mut() {
+        ant.time_since_last_source += delta;
+    }
 }

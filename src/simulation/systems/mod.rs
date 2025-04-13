@@ -27,7 +27,7 @@ pub use boundary::handle_boundaries;
 // pub use setup::spawn_particles; // Old particle setup removed
 pub use environment_setup::setup_environment_system; // New
 pub use ant_setup::spawn_ants_system;             // New
-pub use ant_logic::ant_state_machine_system;      // New
+pub use ant_logic::{ant_state_machine_system, update_ant_timers_system}; // New, added timer system
 pub use ant_movement::ant_movement_system;        // New
 pub use state_export::update_current_simulation_state_resource;
 pub use transport_integration::send_simulation_data_system;

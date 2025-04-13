@@ -31,7 +31,7 @@ pub fn spawn_ants_system(
         let dy = INITIAL_VELOCITY_MAGNITUDE * vel_angle.sin();
 
         commands.spawn((
-            Ant,
+            Ant { time_since_last_source: 0.0 }, // Initialize timer
             Position { x, y },
             Velocity { dx, dy },
             ParticleId(i), // Assign unique ID

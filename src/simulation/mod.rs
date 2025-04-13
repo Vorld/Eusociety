@@ -29,7 +29,8 @@ use self::systems::{
     send_simulation_data_system,
     setup_environment_system,
     spawn_ants_system,
-    ant_state_machine_system,
+    ant_state_machine_system, // State transitions
+    update_ant_timers_system, // Increment ant timers (NEW)
     ant_movement_system,
     // Import pheromone systems
     pheromones::{
@@ -126,7 +127,11 @@ impl SimulationApp {
         // Following the order recommended in Phase2.md
         update_schedule.add_systems((
             // --- Pheromone Logic (Runs first) ---
-            pheromone_deposit_system,
+            // --- Ant Timer Update (Runs before deposit) ---
+            update_ant_timers_system, // NEW
+
+            // --- Pheromone Logic ---
+            pheromone_deposit_system.after(update_ant_timers_system), // Depends on ant timer
             pheromone_decay_system.after(pheromone_deposit_system),
             pheromone_follow_system.after(pheromone_decay_system),
 

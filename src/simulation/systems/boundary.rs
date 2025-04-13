@@ -38,12 +38,12 @@ pub fn handle_boundaries(
                 // Bounce logic
                 if pos.x < 0.0 || pos.x >= width {
                     // TODO: make damping configurable
-                    vel.dx = -vel.dx * 0.50;
+                    vel.dx = -vel.dx * 0.10;
                     pos.x = pos.x.clamp(0.0, width); // Clamp position after bounce
                 }
                 if pos.y < 0.0 || pos.y >= height {
                     // TODO: make damping configurable
-                    vel.dy = -vel.dy * 0.50;
+                    vel.dy = -vel.dy * 0.10;
                     pos.y = pos.y.clamp(0.0, height); // Clamp position after bounce
                 }
             }
