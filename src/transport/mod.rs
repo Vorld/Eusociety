@@ -8,7 +8,7 @@
 
 mod serializer;
 mod sender;
-pub mod delta_compression; 
+// Removed: pub mod delta_compression;
 pub mod websocket; // Declare the new websocket module
 
 use bevy_ecs::prelude::Resource;
@@ -16,14 +16,14 @@ use serde::Serialize;
 use std::time::Instant;
 use tracing::{debug, info};
 use crate::simulation::components::{AntState, PheromoneType}; // Import AntState & PheromoneType for serialization
+use crate::config::PolygonWall; // Import PolygonWall for exporting wall geometry
 
 // Re-export types
 pub use self::serializer::{
     Serializer, SerializationError, JsonSerializer, BinarySerializer, NullSerializer,
     SerializeObject, OptimizedBinarySerializer
 };
-// Re-export DeltaCompressor and its metrics from the new module
-pub use self::delta_compression::{DeltaCompressor, DeltaCompressionMetrics};
+// Removed delta_compression re-exports
 // Re-export WebSocketSender from the new module
 pub use self::websocket::WebSocketSender;
 // Re-export other senders and traits from the sender module
@@ -97,6 +97,9 @@ pub struct SimulationState {
     pub food_sources: Vec<FoodSourceExportState>,
     /// List of active pheromone states.
     pub pheromones: Vec<PheromoneExportState>,
+    /// List of polygon walls defined in the simulation.
+    #[serde(default)] // Ensure compatibility if frontend doesn't expect it yet
+    pub walls: Vec<PolygonWall>,
 }
 
 
@@ -194,24 +197,15 @@ impl TransportController {
 
                 // --- Create OptimizedBinarySerializer ONLY if base serializer is Binary ---
                 if matches!(config.serializer, SerializerConfig::Binary(_)) {
-                    let threshold = if config.delta_compression == Some(true) {
-                    // Use the configured threshold or default to 0.1 if not specified
-                    let threshold_value = config.delta_threshold.unwrap_or(0.1);
-                    info!("Delta compression enabled with threshold {}", threshold_value);
-                    Some(threshold_value)
-                } else {
-                    info!("Delta compression disabled");
-                    None
-                };
-                
-                // Create the optimized serializer
-                let mut opt_serializer = OptimizedBinarySerializer::new(threshold);
-                
-                // Configure parallel serialization if specified
-                if let Some(parallel_config) = &config.parallel_serialization {
-                    opt_serializer.set_parallel(parallel_config.enabled);
-                    
-                    if let Some(threshold) = parallel_config.threshold {
+                    // Delta compression logic removed. Initialize OptimizedBinarySerializer without threshold.
+                    info!("Delta compression disabled (feature removed).");
+                    let mut opt_serializer = OptimizedBinarySerializer::new(None); // Pass None for threshold
+
+                    // Configure parallel serialization if specified
+                    if let Some(parallel_config) = &config.parallel_serialization {
+                        opt_serializer.set_parallel(parallel_config.enabled);
+
+                        if let Some(threshold) = parallel_config.threshold {
                         opt_serializer.set_parallel_threshold(threshold);
                     }
                     
@@ -359,16 +353,9 @@ impl TransportController {
             let result = serializer.serialize_state(state)
                 .map_err(TransportError::SerializationError)?;
                 
-            // Log detailed info if using delta compression
-            if serializer.has_delta_compression() {
-                // Log ant count instead of particle count
-                debug!(
-                    original_ants = original_ant_count,
-                    serialized_size_bytes = result.len(),
-                        "Delta compression metrics"
-                    );
-                }
-                result
+            // Delta compression logging removed.
+            
+                result // Return the serialized result directly
             }
             // Otherwise (no optimized serializer OR base serializer wasn't Binary), use the base serializer
             None => {

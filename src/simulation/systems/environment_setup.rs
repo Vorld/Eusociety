@@ -3,7 +3,7 @@
 
 use bevy_ecs::prelude::*;
 use crate::simulation::components::{Nest, FoodSource, Position};
-use crate::simulation::resources::SimulationConfigResource;
+use crate::simulation::resources::{SimulationConfigResource, WallGeometry}; // Import WallGeometry
 use rand::{thread_rng, Rng}; // Import rand for random positions
 
 /// System that runs once at startup to create the nest and food sources.
@@ -23,9 +23,9 @@ pub fn setup_environment_system(
 
     // Calculate safe spawn area (80% of world size to keep food away from edges)
     let safe_min_width = world_width * 0.8;
-    let safe_min_height = world_height * 0.8;
+    let safe_min_height = world_height * 0.45;
     let safe_max_width = world_width * 0.9;
-    let safe_max_height = world_height * 0.9;
+    let safe_max_height = world_height * 0.55;
     
     // Spawn initial Food Sources randomly within world boundaries
     let mut rng = thread_rng();
@@ -37,4 +37,10 @@ pub fn setup_environment_system(
             Position { x, y },
         ));
     }
+
+    // Load walls from config and insert the resource
+    let wall_geometry = WallGeometry {
+        polygons: simulation_config.0.walls.clone(), // Clone walls from config
+    };
+    commands.insert_resource(wall_geometry);
 }

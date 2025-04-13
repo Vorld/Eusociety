@@ -2,7 +2,8 @@
 //! Resources are globally unique data structures accessible by systems.
 
 use bevy_ecs::system::Resource;
-use crate::transport::SimulationState; // Added import
+use crate::transport::SimulationState;
+use crate::config::PolygonWall; // Import the structure for walls
 
 /// Resource storing the current simulation frame number and the total elapsed time.
 #[derive(Resource, Debug, Default)]
@@ -56,3 +57,11 @@ pub struct CurrentSimulationState(
     /// The wrapped `SimulationState`.
     pub SimulationState
 );
+
+/// Resource holding the geometric definitions of all walls in the simulation.
+/// Loaded from the configuration file during setup.
+#[derive(Resource, Debug, Clone)]
+pub struct WallGeometry {
+    /// A vector containing all polygon walls defined for the simulation.
+    pub polygons: Vec<PolygonWall>,
+}

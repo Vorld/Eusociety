@@ -4,7 +4,7 @@
 use bevy_ecs::prelude::*;
 // Import Ant, Nest, Food, and Pheromone components
 use crate::simulation::components::{ParticleId, Position, Ant, AntState, Nest, FoodSource, Pheromone};
-use crate::simulation::resources::{CurrentSimulationState, FrameCounter};
+use crate::simulation::resources::{CurrentSimulationState, FrameCounter, WallGeometry}; // Import WallGeometry
 // Import specific export state structs and the main SimulationState
 use crate::transport::{AntExportState, NestExportState, FoodSourceExportState, PheromoneExportState, SimulationState}; // Added PheromoneExportState
 
@@ -30,6 +30,7 @@ pub fn update_current_simulation_state_resource(
     query_food: Query<(Entity, &Position), With<FoodSource>>,
     query_pheromones: Query<(Entity, &Position, &Pheromone)>, // Added query for pheromones
     frame_counter: Res<FrameCounter>,
+    wall_geometry: Res<WallGeometry>, // Add WallGeometry resource parameter
 ) {
     // Collect ant states
     let ant_states: Vec<AntExportState> = query_ants
@@ -77,7 +78,8 @@ pub fn update_current_simulation_state_resource(
         ants: ant_states,
         nest: nest_state,
         food_sources: food_states,
-        pheromones: pheromone_states, // Add pheromones field
+        pheromones: pheromone_states,
+        walls: wall_geometry.polygons.clone(), // Clone wall data into the state
     };
 
     // Optional: Log state update for debugging

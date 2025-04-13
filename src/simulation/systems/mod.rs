@@ -19,6 +19,7 @@ pub mod transport_integration;
 pub mod ant_logic;
 pub mod ant_movement;
 pub mod pheromones; // For Phase 2
+pub mod wall_collision; // New: Handles ant collisions with walls
 
 // Re-export the primary system function from each module for convenient use in schedule setup.
 pub use movement::move_particles;
@@ -31,5 +32,6 @@ pub use ant_logic::{ant_state_machine_system, update_ant_timers_system}; // New,
 pub use ant_movement::ant_movement_system;        // New
 pub use state_export::update_current_simulation_state_resource;
 pub use transport_integration::send_simulation_data_system;
+pub use wall_collision::handle_wall_collisions; // New
 
 // Removed the inline transport_integration module

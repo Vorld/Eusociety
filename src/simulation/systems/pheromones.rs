@@ -13,7 +13,7 @@ use crate::simulation::spatial::{PheromoneQuadtree, Rect};
 
 // Constants for Pheromone behavior
 // TODO: Load these from config later
-const PHEROMONE_DEPOSIT_INTERVAL_SECS: f32 = 1; // How often ants *can* deposit
+const PHEROMONE_DEPOSIT_INTERVAL_SECS: f32 = 1.0; // How often ants *can* deposit
 const PHEROMONE_DEPOSIT_PROBABILITY: f64 = 1.0; // Chance to deposit each interval check
 const PHEROMONE_SENSE_RADIUS: f32 = 50.0; // How far ants can sense pheromones
 

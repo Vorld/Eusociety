@@ -10,8 +10,7 @@ use serde::Serialize;
 use thiserror::Error;
 use rayon::prelude::*;
 
-// Import DeltaCompressor from the delta_compression module
-use super::delta_compression::DeltaCompressor; 
+// Removed DeltaCompressor import
 
 /// Error types that can occur during serialization.
 #[derive(Error, Debug)]
@@ -149,8 +148,7 @@ impl SerializerClone for BinarySerializer {
 ///   while maintaining compatibility with the expected `bincode` format.
 #[derive(Clone)]
 pub struct OptimizedBinarySerializer {
-    /// Optional delta compressor instance. If `Some`, `filter_state` is called before serialization.
-    delta_compressor: Option<DeltaCompressor>,
+    // Removed delta_compressor field
     /// Flag to enable/disable parallel serialization.
     use_parallel: bool,
     /// Minimum number of particles required to trigger parallel serialization logic.
@@ -164,14 +162,12 @@ impl OptimizedBinarySerializer {
     ///
     /// # Arguments
     ///
-    /// * `delta_threshold` - If `Some(threshold)`, enables delta compression with the given
-    ///   movement threshold. If `None`, delta compression is disabled.
-    pub fn new(delta_threshold: Option<f32>) -> Self {
-        // Create delta compressor if a threshold is provided
-        let delta_compressor = delta_threshold.map(DeltaCompressor::new);
+    /// * `_delta_threshold` - Parameter removed as delta compression is removed.
+    pub fn new(_delta_threshold: Option<f32>) -> Self { // Parameter kept for now to avoid breaking changes elsewhere, but unused. TODO: Remove parameter later.
+        // Delta compressor creation removed
             
-        Self { 
-            delta_compressor,
+        Self {
+            // delta_compressor removed
             use_parallel: true, // Default to enabled
             parallel_threshold: 50000, // Default threshold
             thread_count: 0,           // Default thread count (auto)
@@ -192,12 +188,9 @@ impl OptimizedBinarySerializer {
     ///
     /// Returns `SerializationError` if any serialization step fails.
     pub fn serialize_state(&mut self, state: &super::SimulationState) -> Result<Vec<u8>, SerializationError> {
-        // 1. Apply delta compression if enabled
-        let final_state = if let Some(compressor) = &mut self.delta_compressor {
-            compressor.filter_state(state)
-        } else {
-            state.clone() // Clone if no delta compression needed
-        };
+        // 1. Delta compression step removed
+        // Use the original state directly (or clone it if necessary for ownership)
+        let final_state = state; // No filtering, use state directly (or state.clone() if ownership needed later)
         
         // 2. Choose serialization strategy based on ant count and config
         // Check ants length now
@@ -316,10 +309,7 @@ impl OptimizedBinarySerializer {
         // --- End Parallel Serialization Steps ---
     }
     
-    /// Returns `true` if delta compression is configured for this serializer.
-    pub fn has_delta_compression(&self) -> bool {
-        self.delta_compressor.is_some()
-    }
+    // Removed has_delta_compression method
     
     /// Enables or disables parallel serialization.
     pub fn set_parallel(&mut self, enabled: bool) -> &mut Self {

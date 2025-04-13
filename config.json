@@ -1,6 +1,6 @@
 {
   "simulation": {
-    "particle_count": 300,
+    "particle_count": 500,
     "world_dimensions": [300.0, 300.0],
     "max_velocity": 30.0,
     "velocity_randomization_factor": 100.0,
@@ -12,10 +12,26 @@
     "pheromone_min_strength": 0.1,
     "pheromone_max_time_away": 20.0,
     "pheromone_linear_decay_amount": 0.001,
-    "pheromone_min_strength_threshold": 0.1
+    "pheromone_min_strength_threshold": 0.1,
+    "walls": [
+      {
+        "vertices": [
+          { "x": 100.0, "y": 100.0 },
+          { "x": 200.0, "y": 100.0 },
+          { "x": 150.0, "y": 200.0 }
+        ]
+      },
+      {
+        "vertices": [
+          { "x": 200.0, "y": 200.0 },
+          { "x": 250.0, "y": 200.0 },
+          { "x": 250.0, "y": 250.0 },
+          { "x": 200.0, "y": 250.0 }
+        ]
+      }
+    ]
   },
   "transport": {
-    "delta_compression": false,
     "parallel_serialization": {
       "enabled": true,
       "threshold": 20000,

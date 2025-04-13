@@ -250,6 +250,43 @@ class BinaryStateParser {
                 pheromones.push({ id, x, y, type_, strength });
             }
 
+            // --- Read Walls Vec ---
+            // console.log(`Reading wall count at offset ${offset}`);
+            if (offset + 8 > buffer.byteLength) throw new Error("Buffer too small for wall count");
+            const wallCountLow = view.getUint32(offset, true); offset += 4;
+            const wallCountHigh = view.getUint32(offset, true); offset += 4;
+            if (wallCountHigh !== 0) console.warn(`Wall count exceeds 2^32: ${wallCountHigh}${wallCountLow}`);
+            const wallCount = wallCountLow;
+            // console.log(`Expecting ${wallCount} walls. Offset: ${offset}`);
+            const walls = [];
+
+            for (let i = 0; i < wallCount; i++) {
+                // Read vertices Vec length (u64) for this wall
+                if (offset + 8 > buffer.byteLength) throw new Error(`Buffer too small for vertex count for wall ${i}`);
+                const vertexCountLow = view.getUint32(offset, true); offset += 4;
+                const vertexCountHigh = view.getUint32(offset, true); offset += 4;
+                if (vertexCountHigh !== 0) console.warn(`Vertex count exceeds 2^32 for wall ${i}: ${vertexCountHigh}${vertexCountLow}`);
+                const vertexCount = vertexCountLow;
+                // console.log(`Wall ${i}: Expecting ${vertexCount} vertices. Offset: ${offset}`);
+
+                const vertices = [];
+                const vertexSize = 4 + 4; // x(f32) + y(f32) = 8 bytes
+                if (offset + vertexCount * vertexSize > buffer.byteLength) throw new Error(`Buffer too small for ${vertexCount} vertices for wall ${i}`);
+
+                for (let j = 0; j < vertexCount; j++) {
+                    const x = view.getFloat32(offset, true); offset += 4;
+                    const y = view.getFloat32(offset, true); offset += 4;
+
+                    if (isNaN(x) || isNaN(y)) {
+                        console.warn(`Parsed NaN position for vertex ${j} of wall ${i}: (${x}, ${y})`);
+                        // Decide how to handle invalid vertex? Skip wall? Skip vertex?
+                        // For now, let's add it but it might cause rendering issues.
+                    }
+                    vertices.push({ x, y });
+                }
+                walls.push({ vertices }); // Add the completed polygon wall
+            }
+
 
             // --- Final Logging & Check ---
             // console.log(`Finished parsing. Offset: ${offset}, Buffer Length: ${buffer.byteLength}`);
@@ -268,14 +305,15 @@ class BinaryStateParser {
                 ants,
                 nest,
                 foodSources,
-                pheromones, // Add pheromones to returned state
+                pheromones,
+                walls, // Add walls to returned state
             };
 
         } catch (e) {
             // Log the specific error and the offset where it occurred
             console.error(`Error parsing binary data at offset ${offset}:`, e.message, e);
             // Return a default/empty state on error
-            return { frame: 0, timestamp: 0, ants: [], nest: null, foodSources: [], pheromones: [] };
+            return { frame: 0, timestamp: 0, ants: [], nest: null, foodSources: [], pheromones: [], walls: [] }; // Add walls to error state
         }
     }
 }
@@ -317,6 +355,7 @@ class EusocietyWebGLRenderer {
         this.foodSourcePositions = new Float32Array(0);
         this.foodPheromonePositions = new Float32Array(0); // Buffer for food trail pheromones
         this.homePheromonePositions = new Float32Array(0); // Buffer for home trail pheromones
+        this.wallVertices = new Float32Array(0); // Buffer for wall line segments
 
         // Timing
         this.lastRenderTime = 0;
@@ -368,6 +407,7 @@ class EusocietyWebGLRenderer {
         this.foodBuffer = gl.createBuffer();
         this.foodPheromoneBuffer = gl.createBuffer(); // Buffer for food trail pheromones
         this.homePheromoneBuffer = gl.createBuffer(); // Buffer for home trail pheromones
+        this.wallBuffer = gl.createBuffer(); // Buffer for wall lines
 
         // GL Settings
         gl.useProgram(this.program);
@@ -439,7 +479,8 @@ class EusocietyWebGLRenderer {
             ants: antMap,
             nest: newState.nest,
             foodSources: foodMap,
-            pheromones: new Map(newState.pheromones.map(p => [p.id, { x: p.x, y: p.y, type_: p.type_, strength: p.strength }])) // Add pheromones Map
+            pheromones: new Map(newState.pheromones.map(p => [p.id, { x: p.x, y: p.y, type_: p.type_, strength: p.strength }])), // Add pheromones Map
+            walls: newState.walls || [] // Store the parsed walls array, default to empty if missing
         };
 
         // Update walker count display
@@ -553,6 +594,48 @@ class EusocietyWebGLRenderer {
             gl.bindBuffer(gl.ARRAY_BUFFER, this.foodPheromoneBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
             gl.bindBuffer(gl.ARRAY_BUFFER, this.homePheromoneBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+        }
+
+        // Update Wall Buffer
+        if (this.latestState && this.latestState.walls && this.latestState.walls.length > 0) {
+            let totalVertices = 0;
+            this.latestState.walls.forEach(wall => {
+                if (wall.vertices && wall.vertices.length >= 2) {
+                    // Each line segment needs 2 vertices, and a polygon with N vertices has N segments
+                    totalVertices += wall.vertices.length * 2;
+                }
+            });
+
+            // Resize buffer if needed (totalVertices stores the number of *floats* needed)
+            if (this.wallVertices.length < totalVertices) {
+                this.wallVertices = new Float32Array(totalVertices);
+            }
+
+            let bufferIndex = 0;
+            this.latestState.walls.forEach(wall => {
+                if (wall.vertices && wall.vertices.length >= 2) {
+                    for (let i = 0; i < wall.vertices.length; i++) {
+                        const p1 = wall.vertices[i];
+                        const p2 = wall.vertices[(i + 1) % wall.vertices.length]; // Connect back to start
+
+                        // Add first point of the segment
+                        this.wallVertices[bufferIndex++] = p1.x;
+                        this.wallVertices[bufferIndex++] = p1.y;
+                        // Add second point of the segment
+                        this.wallVertices[bufferIndex++] = p2.x;
+                        this.wallVertices[bufferIndex++] = p2.y;
+                    }
+                }
+            });
+
+            // Use bufferIndex which represents the actual number of floats written
+            const bufferDataView = new Float32Array(this.wallVertices.buffer, 0, bufferIndex);
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, bufferDataView, gl.DYNAMIC_DRAW);
+        } else {
+            // Clear buffer if no walls
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
         }
     }
@@ -752,6 +835,23 @@ class EusocietyWebGLRenderer {
             }
         }
         if (returningCount > 0) gl.drawArrays(gl.POINTS, returningOffset, returningCount);
+
+        // --- Draw Walls ---
+        gl.uniform1i(this.useStrengthAlphaLocation, 0); // Walls don't use strength alpha
+        const wallVertexCount = this.wallVertices.length / 2; // 2 components (x, y) per vertex
+        if (wallVertexCount > 0) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.wallBuffer);
+            // Position attribute: 2 components (x, y), stride = 0, offset = 0
+            // (No strength component here)
+            gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(this.positionLocation); // Ensure position is enabled
+            gl.disableVertexAttribArray(this.strengthLocation); // Ensure strength is disabled for walls
+
+            gl.uniform4f(this.colorLocation, 0.3, 0.3, 0.3, 1.0); // Dark grey for walls
+            // No point size needed for lines
+
+            gl.drawArrays(gl.LINES, 0, wallVertexCount); // Draw the lines
+        }
 
         // --- Loop ---
         requestAnimationFrame(this.render.bind(this));

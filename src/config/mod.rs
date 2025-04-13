@@ -6,8 +6,9 @@ use thiserror::Error;
 // Re-export configuration types for easier access from other modules.
 pub use self::types::{
     Config, SimulationConfig, TransportConfig, BoundaryBehavior,
-    SerializerConfig, JsonSerializerConfig, BinarySerializerConfig, // Serializer types
-    SenderConfig, FileSenderConfig, WebSocketSenderConfig // Sender types
+    SerializerConfig, JsonSerializerConfig, BinarySerializerConfig, NullSerializerConfig, // Serializer types (Added Null)
+    SenderConfig, FileSenderConfig, WebSocketSenderConfig, NullSenderConfig, // Sender types (Added Null)
+    Point, PolygonWall // Added Point and PolygonWall for wall definitions
 };
 pub mod types; // Make the types module public
 

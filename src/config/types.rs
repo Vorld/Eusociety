@@ -12,6 +12,19 @@ pub struct Config {
     pub transport: TransportConfig,
 }
 
+/// Represents a 2D point.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Represents a wall defined by a sequence of connected vertices.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PolygonWall {
+    pub vertices: Vec<Point>,
+}
+
 /// Simulation-specific configuration parameters.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SimulationConfig {
@@ -27,6 +40,9 @@ pub struct SimulationConfig {
     pub velocity_damping_factor: f32, 
     /// How particles behave when they hit the world boundaries.
     pub boundary_behavior: BoundaryBehavior,
+    /// Optional list of polygon walls within the simulation area.
+    #[serde(default)] // Makes this field optional in the config file
+    pub walls: Vec<PolygonWall>,
     /// Target frame rate for the simulation loop.
     pub frame_rate: u32,
     /// Number of food sources to spawn in the environment.
@@ -51,12 +67,7 @@ pub struct TransportConfig {
     pub serializer: SerializerConfig,
     /// Configuration for the data sender.
     pub sender: SenderConfig,
-    /// Enable delta compression (send only changed particle data)? (Default: false)
-    /// Primarily effective with `OptimizedBinarySerializer` and `WebSocketSender`.
-    pub delta_compression: Option<bool>, 
-    /// Movement distance threshold for delta compression. Only particles moving more
-    /// than this distance since the last sent state will be included. (Default: 0.1)
-    pub delta_threshold: Option<f32>,
+    // Removed delta_compression and delta_threshold fields
     /// Configuration for enabling and tuning parallel serialization.
     /// Primarily effective with `OptimizedBinarySerializer`.
     pub parallel_serialization: Option<ParallelSerializationConfig>,

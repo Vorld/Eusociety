@@ -39,6 +39,7 @@ use self::systems::{
         pheromone_decay_system,
         pheromone_follow_system,
     },
+    handle_wall_collisions, // Import the new wall collision system
 };
 // Removed: use crate::simulation::systems::state_export::update_current_simulation_state_resource; // No longer needed as it's imported above
 
@@ -140,8 +141,11 @@ impl SimulationApp {
             ant_movement_system.after(pheromone_follow_system), // Must run after influence is calculated
 
             // --- Physics (Uses updated velocity) ---
-            move_particles.after(ant_movement_system),
-            handle_boundaries.after(move_particles),
+            // Wall collision check happens *after* intended movement is calculated,
+            // but *before* the position is actually updated by move_particles.
+            handle_wall_collisions.after(ant_movement_system),
+            move_particles.after(handle_wall_collisions), // Position update happens after wall adjustments
+            handle_boundaries.after(move_particles), // Outer boundaries check happens last
 
             // --- Export & Transport (Runs last) ---
             update_current_simulation_state_resource.after(handle_boundaries),
